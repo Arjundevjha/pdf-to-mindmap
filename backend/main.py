@@ -4,6 +4,8 @@ import logging
 import re
 from typing import Optional, List
 from fastapi import FastAPI, UploadFile, File, HTTPException, Body
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import pypdf
@@ -446,3 +448,39 @@ async def generate_mindmap(payload: MindmapGenerateRequest):
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+# Mount static files and set up catch-all route for frontend React app
+# Resolve the absolute path of frontend dist directory
+FRONTEND_DIST_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../frontend/dist"))
+
+# Mount frontend assets folder if it exists
+assets_path = os.path.join(FRONTEND_DIST_DIR, "assets")
+if os.path.isdir(assets_path):
+    app.mount("/assets", StaticFiles(directory=assets_path), name="assets")
+
+# Catch-all route to serve the React index.html and other public files (like favicon.svg, icons.svg)
+@app.get("/{catchall:path}")
+async def serve_frontend(catchall: str):
+    # Prevent handling API routes in the catch-all
+    if catchall.startswith("api/"):
+        raise HTTPException(status_code=404, detail="API endpoint not found")
+    
+    # Prevent path traversal
+    if ".." in catchall or "\\" in catchall or catchall.startswith("/"):
+        raise HTTPException(status_code=400, detail="Invalid path")
+        
+    # Resolve absolute paths and verify they are within FRONTEND_DIST_DIR to prevent path traversal
+    real_dist_dir = os.path.realpath(FRONTEND_DIST_DIR)
+    file_path = os.path.realpath(os.path.join(real_dist_dir, catchall))
+    
+    if not file_path.startswith(real_dist_dir + os.sep) and file_path != real_dist_dir:
+        raise HTTPException(status_code=403, detail="Access denied")
+        
+    if catchall and os.path.exists(file_path) and os.path.isfile(file_path):
+        return FileResponse(file_path)
+        
+    index_path = os.path.join(real_dist_dir, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    
+    raise HTTPException(status_code=404, detail="Frontend build files not found. Please run 'npm run build' in the frontend directory.")
