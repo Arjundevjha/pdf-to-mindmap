@@ -23,7 +23,9 @@ interface DocumentItem {
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL 
   ? `${import.meta.env.VITE_API_BASE_URL}/api` 
-  : 'http://localhost:8000/api';
+  : (typeof window !== 'undefined' && window.location.hostname !== 'localhost'
+      ? '/api'
+      : 'http://localhost:8000/api');
 
 export default function App() {
   // Supabase Client state
@@ -52,7 +54,8 @@ export default function App() {
   useEffect(() => {
     const initSupabase = async () => {
       try {
-        const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+        const apiBaseUrl = import.meta.env.VITE_API_BASE_URL 
+          || (typeof window !== 'undefined' && window.location.hostname !== 'localhost' ? '' : 'http://localhost:8000');
         const response = await fetch(`${apiBaseUrl}/api/auth/config`);
         if (response.ok) {
           const config = await response.json();
