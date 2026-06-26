@@ -21,6 +21,10 @@ interface DocumentItem {
   userEmail?: string;
 }
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL 
+  ? `${import.meta.env.VITE_API_BASE_URL}/api` 
+  : 'http://localhost:8000/api';
+
 export default function App() {
   // Supabase Client state
   const [supabase, setSupabase] = useState<SupabaseClient | null>(null);
@@ -48,7 +52,8 @@ export default function App() {
   useEffect(() => {
     const initSupabase = async () => {
       try {
-        const response = await fetch('http://localhost:8000/api/auth/config');
+        const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+        const response = await fetch(`${apiBaseUrl}/api/auth/config`);
         if (response.ok) {
           const config = await response.json();
           const client = createClient(config.supabaseUrl, config.supabaseKey);
@@ -176,7 +181,6 @@ export default function App() {
 
     const fetchUserDocuments = async () => {
       try {
-        const API_BASE = 'http://localhost:8000/api';
         const response = await fetch(`${API_BASE}/documents?email=${encodeURIComponent(currentUserEmail)}`);
         if (response.ok) {
           const docs = await response.json();
@@ -305,7 +309,6 @@ export default function App() {
     // Background sync to database
     if (currentUserEmail) {
       try {
-        const API_BASE = 'http://localhost:8000/api';
         await fetch(`${API_BASE}/documents`, {
           method: 'POST',
           headers: {
@@ -346,7 +349,6 @@ export default function App() {
     // Async database sync
     if (currentUserEmail) {
       try {
-        const API_BASE = 'http://localhost:8000/api';
         await fetch(`${API_BASE}/documents/${docId}?email=${encodeURIComponent(currentUserEmail)}`, {
           method: 'DELETE',
         });
@@ -407,7 +409,6 @@ export default function App() {
       // Async database reset
       if (emailCache) {
         try {
-          const API_BASE = 'http://localhost:8000/api';
           await fetch(`${API_BASE}/documents/reset/workspace?email=${encodeURIComponent(emailCache)}`, {
             method: 'DELETE',
           });
