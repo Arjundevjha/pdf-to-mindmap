@@ -3,7 +3,7 @@ import json
 import logging
 import re
 from typing import Optional, List
-from fastapi import FastAPI, UploadFile, File, HTTPException, Body
+from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -62,6 +62,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def rewrite_api_path(request: Request, call_next):
+    path = request.scope["path"]
+    # If Vercel stripped /api, prepend it back so FastAPI's routes match
+    if not path.startswith("/api") and (
+        path.startswith("/auth") or 
+        path.startswith("/documents") or 
+        path.startswith("/upload-pdf") or 
+        path.startswith("/generate-mindmap") or 
+        path == "/health"
+    ):
+        request.scope["path"] = "/api" + path
+    response = await call_next(request)
+    return response
 
 def split_text_into_chunks(text: str, chunk_size: int = 30000) -> list[str]:
     chunks = []
