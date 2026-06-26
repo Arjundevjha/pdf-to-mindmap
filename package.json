@@ -1,0 +1,11 @@
+{
+  "name": "pdf-to-mindmap-project",
+  "version": "1.0.0",
+  "description": "ADHD-friendly PDF-to-Mindmap Study Application",
+  "scripts": {
+    "start": "./start.sh"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
