@@ -1,5 +1,27 @@
 import React, { useState, useRef } from 'react';
 import { Upload, AlertCircle, FileText, CheckCircle } from 'lucide-react';
+import { useToast } from './Toast';
+
+const getSingleModelFriendlyName = (id: string) => {
+  if (id.includes('llama-4-scout')) return 'Llama 4 Scout';
+  if (id.includes('llama-3.3-70b')) return 'Llama 3.3 70B';
+  if (id.includes('qwen3.6') || id.includes('qwen3.6-27b')) return 'Qwen 3.6 27B';
+  if (id.includes('qwen3-32b')) return 'Qwen 3 32B';
+  if (id.includes('gpt-oss-20b')) return 'GPT-OSS 20B';
+  if (id.includes('llama-3.1-8b')) return 'Llama 3.1 8B';
+  return id;
+};
+
+const getModelFriendlyName = (modelId: string | null) => {
+  if (!modelId) return 'Default LLM';
+  if (modelId.includes(',')) {
+    return modelId
+      .split(',')
+      .map(id => getSingleModelFriendlyName(id.trim()))
+      .join(', ');
+  }
+  return getSingleModelFriendlyName(modelId);
+};
 
 interface UploadZoneProps {
   onMindmapGenerated: (filename: string, data: any) => void;
@@ -7,6 +29,7 @@ interface UploadZoneProps {
 }
 
 export function UploadZone({ onMindmapGenerated, selectedModel }: UploadZoneProps) {
+  const toast = useToast();
   const [dragActive, setDragActive] = useState(false);
   const [status, setStatus] = useState<'idle' | 'extracting' | 'generating' | 'success' | 'error'>('idle');
   const [progress, setProgress] = useState(0);
@@ -46,7 +69,12 @@ export function UploadZone({ onMindmapGenerated, selectedModel }: UploadZoneProp
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     e.preventDefault();
     if (e.target.files && e.target.files[0]) {
-      processFile(e.target.files[0]);
+      const file = e.target.files[0];
+      if (file.type === "application/pdf" || file.name.endsWith('.pdf')) {
+        processFile(file);
+      } else {
+        showError("Invalid file type. Please upload a PDF.");
+      }
     }
   };
 
@@ -55,9 +83,11 @@ export function UploadZone({ onMindmapGenerated, selectedModel }: UploadZoneProp
   };
 
   const showError = (message: string) => {
-    setStatus('error');
-    setErrorMessage(message);
+    toast.error(message);
+    setStatus('idle');
+    setErrorMessage('');
     setProgress(0);
+    setFileName('');
   };
 
   const processFile = async (file: File) => {
@@ -106,6 +136,10 @@ export function UploadZone({ onMindmapGenerated, selectedModel }: UploadZoneProp
         throw new Error(errorData.detail || "Failed to generate mindmap from text.");
       }
 
+      const modelUsed = generateResponse.headers.get('X-Model-Used');
+      const isRouted = generateResponse.headers.get('X-Model-Routed') === 'true';
+      const modelsList = modelUsed ? modelUsed.split(',') : [];
+
       setProgress(90);
       const mindmapData = await generateResponse.json();
 
@@ -114,6 +148,14 @@ export function UploadZone({ onMindmapGenerated, selectedModel }: UploadZoneProp
       setProgress(100);
       setTimeout(() => {
         onMindmapGenerated(file.name, mindmapData);
+        
+        const friendlyName = getModelFriendlyName(modelUsed);
+        if (modelsList.length > 1) {
+          toast.success(`Distributed processing completed using: ${friendlyName} (optimized speed & bypass rate limits).`);
+        } else if (isRouted) {
+          toast.info(`Smart Routing: text is short, generated using ${friendlyName} for efficiency.`);
+        }
+        
         // Reset state after a brief delay
         setStatus('idle');
         setProgress(0);

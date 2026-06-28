@@ -3,6 +3,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { UploadZone } from './components/UploadZone';
 import { MindmapCanvas } from './components/MindmapCanvas';
 import type { MindmapNode } from './components/MindmapCanvas';
+import { useToast } from './components/Toast';
 import { 
   Undo2, 
   Maximize2, 
@@ -28,6 +29,7 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL
       : 'http://localhost:8000/api');
 
 export default function App() {
+  const toast = useToast();
   // Supabase Client state
   const [supabase, setSupabase] = useState<SupabaseClient | null>(null);
 
@@ -63,9 +65,11 @@ export default function App() {
           setSupabase(client);
         } else {
           console.error("Failed to load Supabase config from API");
+          toast.warning("Could not load database configuration. Working in local-only offline mode.");
         }
       } catch (err) {
         console.error("Error loading Supabase config:", err);
+        toast.warning("Could not connect to database server. Working in local-only offline mode.");
       }
     };
     initSupabase();
@@ -134,11 +138,15 @@ export default function App() {
   const [selectedModel, setSelectedModel] = useState<string>(() => {
     const saved = localStorage.getItem('pdf_mindmaps_model');
     const validModels = [
+      'auto-smart-routing',
       'meta-llama/llama-4-scout-17b-16e-instruct',
-      'mixtral-8x7b-32768',
-      'llama3-70b-8192'
+      'llama-3.3-70b-versatile',
+      'qwen/qwen3.6-27b',
+      'qwen/qwen3-32b',
+      'openai/gpt-oss-20b',
+      'llama-3.1-8b-instant'
     ];
-    return (saved && validModels.includes(saved)) ? saved : 'meta-llama/llama-4-scout-17b-16e-instruct';
+    return (saved && validModels.includes(saved)) ? saved : 'auto-smart-routing';
   });
 
   // Undo history stack for expanded node states
@@ -190,9 +198,11 @@ export default function App() {
           setDocuments(docs);
         } else {
           console.error("Failed to load documents from database");
+          toast.warning("Failed to load saved documents from database.");
         }
       } catch (err) {
         console.error("Error loading user documents:", err);
+        toast.warning("Could not connect to database to sync documents.");
       }
     };
 
@@ -312,7 +322,7 @@ export default function App() {
     // Background sync to database
     if (currentUserEmail) {
       try {
-        await fetch(`${API_BASE}/documents`, {
+        const response = await fetch(`${API_BASE}/documents`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -324,9 +334,16 @@ export default function App() {
             userEmail: currentUserEmail
           }),
         });
+        if (!response.ok) {
+          throw new Error("Failed to save to database");
+        }
+        toast.success("Mindmap generated and synced to cloud.");
       } catch (err) {
         console.error("Error syncing new document to database:", err);
+        toast.warning("Mindmap created, but failed to sync to cloud. It is saved locally.");
       }
+    } else {
+      toast.success("Mindmap generated successfully (local-only).");
     }
   };
 
@@ -352,12 +369,19 @@ export default function App() {
     // Async database sync
     if (currentUserEmail) {
       try {
-        await fetch(`${API_BASE}/documents/${docId}?email=${encodeURIComponent(currentUserEmail)}`, {
+        const response = await fetch(`${API_BASE}/documents/${docId}?email=${encodeURIComponent(currentUserEmail)}`, {
           method: 'DELETE',
         });
+        if (!response.ok) {
+          throw new Error("Failed to delete from database");
+        }
+        toast.success("Document deleted.");
       } catch (err) {
         console.error("Error syncing deletion to database:", err);
+        toast.warning("Failed to delete document from cloud. It has been removed locally.");
       }
+    } else {
+      toast.success("Document deleted.");
     }
   };
 
@@ -412,12 +436,19 @@ export default function App() {
       // Async database reset
       if (emailCache) {
         try {
-          await fetch(`${API_BASE}/documents/reset/workspace?email=${encodeURIComponent(emailCache)}`, {
+          const response = await fetch(`${API_BASE}/documents/reset/workspace?email=${encodeURIComponent(emailCache)}`, {
             method: 'DELETE',
           });
+          if (!response.ok) {
+            throw new Error("Failed to reset workspace in database");
+          }
+          toast.success("Workspace reset successfully.");
         } catch (err) {
           console.error("Error resetting workspace in database:", err);
+          toast.warning("Local workspace cleared, but failed to sync reset to cloud.");
         }
+      } else {
+        toast.success("Workspace reset successfully.");
       }
     }
   };
@@ -618,9 +649,13 @@ export default function App() {
               onChange={(e) => setSelectedModel(e.target.value)}
               className="w-full text-xs bg-slate-50 border border-slate-200 text-slate-700 px-2.5 py-1.5 focus:outline-none focus:border-slate-300 font-medium select-none cursor-pointer rounded-none"
             >
-              <option value="meta-llama/llama-4-scout-17b-16e-instruct">Llama 4 Scout (17B) (Recommended)</option>
-              <option value="mixtral-8x7b-32768">Mixtral 8x7B</option>
-              <option value="llama3-70b-8192">Llama 3 70B</option>
+              <option value="auto-smart-routing">Auto (Smart Routing) (Recommended)</option>
+              <option value="meta-llama/llama-4-scout-17b-16e-instruct">Llama 4 Scout (17B) (High Quality)</option>
+              <option value="llama-3.3-70b-versatile">Llama 3.3 70B (High Quality)</option>
+              <option value="qwen/qwen3.6-27b">Qwen 3.6 27B</option>
+              <option value="qwen/qwen3-32b">Qwen 3 32B</option>
+              <option value="openai/gpt-oss-20b">GPT-OSS 20B</option>
+              <option value="llama-3.1-8b-instant">Llama 3.1 8B (Fast)</option>
             </select>
           </div>
 

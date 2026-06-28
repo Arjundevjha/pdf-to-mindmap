@@ -58,3 +58,33 @@
 .react-flow__controls-button:last-child {
   @apply border-b-0 !important;
 }
+
+/* Toast animations */
+@keyframes slide-in {
+  from {
+    transform: translateY(1rem) scale(0.95);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes shrink-width {
+  from {
+    width: 100%;
+  }
+  to {
+    width: 0%;
+  }
+}
+
+.animate-slide-in {
+  animation: slide-in 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-shrink-width {
+  animation: shrink-width linear forwards;
+}
+

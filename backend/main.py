@@ -2,8 +2,9 @@ import os
 import json
 import logging
 import re
+import random
 from typing import Optional, List
-from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Request, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -112,6 +113,60 @@ def make_ids_unique(node: dict, suffix: str) -> dict:
     for child in node.get("children", []):
         make_ids_unique(child, suffix)
     return node
+
+def consolidate_summaries(sub_maps: list[dict]) -> str:
+    core_concepts = []
+    examples = []
+    
+    for i, sub_map in enumerate(sub_maps):
+        part_name = f"Part {i+1}"
+        summary_text = sub_map.get("summary", "")
+        
+        # Extract Core Concept section
+        concept_match = re.search(r"### Core Concept\s*\n(.*?)(?=\n###|$)", summary_text, re.DOTALL)
+        if concept_match:
+            concept_content = concept_match.group(1).strip()
+            # Clean up leading dashes or bullet points and format nicely
+            clean_lines = []
+            for line in concept_content.split('\n'):
+                line = line.strip()
+                if line.startswith('-'):
+                    line = line[1:].strip()
+                if line:
+                    clean_lines.append(line)
+            if clean_lines:
+                core_concepts.append(f"- **{part_name}**: {'; '.join(clean_lines)}")
+        
+        # Extract Examples section
+        examples_match = re.search(r"### Examples\s*\n(.*?)(?=\n###|$)", summary_text, re.DOTALL)
+        if examples_match:
+            examples_content = examples_match.group(1).strip()
+            clean_lines = []
+            for line in examples_content.split('\n'):
+                line = line.strip()
+                if line.startswith('-'):
+                    line = line[1:].strip()
+                if line:
+                    clean_lines.append(line)
+            if clean_lines:
+                examples.append(f"- **{part_name}**: {'; '.join(clean_lines)}")
+                
+    # If we couldn't parse anything, return a fallback
+    if not core_concepts:
+        return (
+            "### Core Concept\n- Consolidated study guide covering all parts of the document.\n\n"
+            "### Examples\n- Multi-part document processing.\n\n"
+            "### Connection\n- Master consolidated topic map."
+        )
+        
+    core_concept_str = "\n".join(core_concepts)
+    examples_str = "\n".join(examples) if examples else "- Key examples are detailed in the respective sub-sections."
+    
+    return (
+        f"### Core Concept\n{core_concept_str}\n\n"
+        f"### Examples\n{examples_str}\n\n"
+        f"### Connection\n- Merges all sections into a comprehensive study overview."
+    )
 
 class MindmapGenerateRequest(BaseModel):
     text: str
@@ -325,7 +380,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Failed to process PDF: {str(e)}")
 
 @app.post("/api/generate-mindmap")
-async def generate_mindmap(payload: MindmapGenerateRequest):
+async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         logger.error("GROQ_API_KEY is not set in the environment variables.")
@@ -366,22 +421,75 @@ async def generate_mindmap(payload: MindmapGenerateRequest):
         "- Ensure the entire response is a single, valid JSON object matching the schema."
     )
     
+    selected_model = payload.model or "meta-llama/llama-4-scout-17b-16e-instruct"
+    word_count = len(payload.text.split())
+    
+    # Small models (Llama 3.1 8B) have a strict 6,000 TPM limit on the free tier.
+    # We reduce chunk size to 15,000 characters (approx 3,000 tokens) if a small model is involved or if we distribute chunks.
+    if selected_model in ["llama-3.1-8b-instant", "auto-smart-routing"] or len(payload.text) > 30000:
+        chunk_size = 15000
+    else:
+        chunk_size = 30000
+        
     # Split full text into chunks (limit to maximum 5 chunks)
-    chunks = split_text_into_chunks(payload.text, chunk_size=30000)[:5]
-    logger.info(f"Splitting document into {len(chunks)} chunks for parallel Groq processing.")
+    chunks = split_text_into_chunks(payload.text, chunk_size=chunk_size)[:5]
+    logger.info(f"Splitting document into {len(chunks)} chunks of size {chunk_size} for parallel Groq processing.")
     
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
     
-    model_name = payload.model
+    LARGE_POOL = [
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant"
+    ]
+    SMALL_POOL = [
+        "llama-3.1-8b-instant"
+    ]
+
+    primary_model = selected_model
+    is_routed = False
     
+    if selected_model == "auto-smart-routing":
+        is_routed = True
+        if word_count < 1500:
+            primary_model = "llama-3.1-8b-instant"
+        else:
+            primary_model = "meta-llama/llama-4-scout-17b-16e-instruct"
+
+    is_small_tier = primary_model in SMALL_POOL
+    target_pool = SMALL_POOL if is_small_tier else LARGE_POOL
+
+    chunk_models = []
+    for idx in range(len(chunks)):
+        if idx == 0:
+            chunk_models.append(primary_model)
+        else:
+            others = [m for m in target_pool if m != primary_model]
+            if not others:
+                others = target_pool
+            model_to_use = others[(idx - 1) % len(others)]
+            chunk_models.append(model_to_use)
+
+    unique_models_used = []
+    for m in chunk_models:
+        if m not in unique_models_used:
+            unique_models_used.append(m)
+            
+    models_used_str = ", ".join(unique_models_used)
+
+    response.headers["X-Model-Used"] = models_used_str
+    response.headers["X-Model-Routed"] = "true" if (is_routed or len(chunks) > 1) else "false"
+    response.headers["Access-Control-Expose-Headers"] = "X-Model-Used, X-Model-Routed"
+
     async def process_chunk(client: httpx.AsyncClient, chunk_text: str, index: int) -> dict:
+        chunk_model = chunk_models[index]
         user_prompt = f"Here is the text extracted from Part {index+1} of the document to turn into a mindmap:\n\n{chunk_text}"
         
         data = {
-            "model": model_name,
+            "model": chunk_model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -390,32 +498,81 @@ async def generate_mindmap(payload: MindmapGenerateRequest):
             "response_format": {"type": "json_object"}
         }
         
-        logger.info(f"Sending Groq API request for Chunk {index+1} using model: {model_name}")
-        response = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data)
+        max_retries = 3
+        backoff_factor = 2.0
         
-        if response.status_code != 200:
-            logger.error(f"Groq API returned error status {response.status_code} for chunk {index+1}: {response.text}")
-            raise HTTPException(status_code=response.status_code, detail=f"Groq API Error on chunk {index+1}: {response.text}")
-            
-        response_json = response.json()
-        choices = response_json.get("choices", [])
-        if not choices:
-            raise HTTPException(status_code=500, detail=f"Groq response for chunk {index+1} is missing choices.")
-            
-        content = choices[0].get("message", {}).get("content", "")
-        
-        cleaned_content = clean_json_string(content)
-        try:
-            mindmap_data = json.loads(cleaned_content)
-            if "id" not in mindmap_data or "label" not in mindmap_data or "children" not in mindmap_data:
-                raise ValueError("JSON is missing required mindmap properties (id, label, children).")
-            return mindmap_data
-        except Exception as parse_error:
-            logger.error(f"Failed to parse Groq response into valid mindmap JSON for chunk {index+1}. Error: {str(parse_error)}")
-            raise HTTPException(
-                status_code=500, 
-                detail=f"The model's output for chunk {index+1} could not be parsed into a valid mindmap. Raw: {content[:200]}"
-            )
+        for attempt in range(max_retries + 1):
+            try:
+                logger.info(f"Sending Groq API request for Chunk {index+1} (Attempt {attempt+1}/{max_retries+1}) using model: {chunk_model}")
+                response = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data)
+                
+                # Handle standard HTTP 429 Too Many Requests
+                if response.status_code == 429:
+                    if attempt < max_retries:
+                        retry_after = response.headers.get("retry-after")
+                        sleep_seconds = float(retry_after) if retry_after else (backoff_factor ** attempt + random.uniform(1.5, 3.5))
+                        logger.warning(f"Rate limit hit (429) on chunk {index+1} for model {chunk_model}. Retrying in {sleep_seconds:.2f}s...")
+                        await asyncio.sleep(sleep_seconds)
+                        continue
+                    else:
+                        logger.error(f"Rate limit retries exhausted for chunk {index+1}: {response.text}")
+                        raise HTTPException(status_code=429, detail=f"Rate limit exceeded on chunk {index+1}. Please try again later.")
+                
+                # Check for other error codes
+                if response.status_code != 200:
+                    resp_json = {}
+                    try:
+                        resp_json = response.json()
+                    except Exception:
+                        pass
+                    
+                    error_msg = resp_json.get("error", {}).get("message", "")
+                    
+                    # Sometimes rate limits return as 400 or other codes on some Gateways
+                    if "rate limit" in error_msg.lower() or "tpm" in error_msg.lower() or "rpm" in error_msg.lower():
+                        if attempt < max_retries:
+                            sleep_seconds = backoff_factor ** attempt + random.uniform(2.0, 5.0)
+                            logger.warning(f"Rate limit error message detected on chunk {index+1} for model {chunk_model}. Retrying in {sleep_seconds:.2f}s...")
+                            await asyncio.sleep(sleep_seconds)
+                            continue
+                    
+                    logger.error(f"Groq API returned error status {response.status_code} for chunk {index+1}: {response.text}")
+                    raise HTTPException(status_code=response.status_code, detail=f"Groq API Error on chunk {index+1}: {response.text}")
+                
+                response_json = response.json()
+                choices = response_json.get("choices", [])
+                if not choices:
+                    raise HTTPException(status_code=500, detail=f"Groq response for chunk {index+1} is missing choices.")
+                
+                content = choices[0].get("message", {}).get("content", "")
+                cleaned_content = clean_json_string(content)
+                
+                try:
+                    mindmap_data = json.loads(cleaned_content)
+                    if "id" not in mindmap_data or "label" not in mindmap_data or "children" not in mindmap_data:
+                        raise ValueError("Missing required keys in mindmap JSON (id, label, children).")
+                    return mindmap_data
+                except Exception as parse_error:
+                    # If JSON parsing fails, retry generation
+                    if attempt < max_retries:
+                        logger.warning(f"JSON parsing failed for chunk {index+1} (Attempt {attempt+1}). Retrying generation...")
+                        await asyncio.sleep(1.0)
+                        continue
+                    else:
+                        logger.error(f"Failed to parse Groq response into valid mindmap JSON for chunk {index+1}. Error: {str(parse_error)}")
+                        raise HTTPException(
+                            status_code=500, 
+                            detail=f"The model's output for chunk {index+1} could not be parsed into a valid mindmap. Raw: {content[:200]}"
+                        )
+                        
+            except httpx.HTTPError as http_err:
+                if attempt < max_retries:
+                    sleep_seconds = backoff_factor ** attempt + random.uniform(1.0, 2.5)
+                    logger.warning(f"HTTP error on chunk {index+1} (Attempt {attempt+1}): {str(http_err)}. Retrying in {sleep_seconds:.2f}s...")
+                    await asyncio.sleep(sleep_seconds)
+                    continue
+                else:
+                    raise HTTPException(status_code=500, detail=f"HTTP connection error on chunk {index+1}: {str(http_err)}")
 
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -438,7 +595,7 @@ async def generate_mindmap(payload: MindmapGenerateRequest):
             consolidated_root = {
                 "id": "root",
                 "label": first_label,
-                "summary": "### Core Concept\n- Consolidated study map merging key concepts across all pages of the document.\n\n### Examples\n- **Multi-Part Processing**: Structured sections processed concurrently via parallel prompts.\n\n### Connection\n- Master study map.",
+                "summary": consolidate_summaries(sub_maps),
                 "children": []
             }
             
