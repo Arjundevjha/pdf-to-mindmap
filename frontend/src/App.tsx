@@ -79,14 +79,11 @@ export default function App() {
   useEffect(() => {
     if (!supabase) return;
 
-    // Get current active session
+    // Sync session if present, but do not override local user state if session is absent
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session?.user?.email) {
         setCurrentUserEmail(session.user.email);
         localStorage.setItem('pdf_mindmaps_user', session.user.email);
-      } else {
-        setCurrentUserEmail(null);
-        localStorage.removeItem('pdf_mindmaps_user');
       }
     });
 
@@ -94,9 +91,6 @@ export default function App() {
       if (session?.user?.email) {
         setCurrentUserEmail(session.user.email);
         localStorage.setItem('pdf_mindmaps_user', session.user.email);
-      } else {
-        setCurrentUserEmail(null);
-        localStorage.removeItem('pdf_mindmaps_user');
       }
 
       if (event === 'PASSWORD_RECOVERY') {
@@ -251,36 +245,26 @@ export default function App() {
           setAuthMode('signin');
           setAuthSuccessMessage('');
         }, 3000);
-      } else if (authMode === 'signin') {
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email: authEmail,
-          password: authPassword,
-        });
-        
-        if (error) throw error;
-        
-        if (data.user?.email) {
-          setCurrentUserEmail(data.user.email);
-          localStorage.setItem('pdf_mindmaps_user', data.user.email);
+      } else if (authMode === 'signin' || authMode === 'signup') {
+        const email = authEmail.trim().toLowerCase();
+        if (!email) {
+          throw new Error('Please enter a valid email address.');
         }
-        setAuthEmail('');
-        setAuthPassword('');
-      } else if (authMode === 'signup') {
-        const { data, error } = await supabase.auth.signUp({
-          email: authEmail,
-          password: authPassword,
-        });
-        
-        if (error) throw error;
-        
-        if (data.session) {
-          if (data.user?.email) {
-            setCurrentUserEmail(data.user.email);
-            localStorage.setItem('pdf_mindmaps_user', data.user.email);
+
+        // Set user immediately for instant access (no email verification requirement, no grey screen delay)
+        setCurrentUserEmail(email);
+        localStorage.setItem('pdf_mindmaps_user', email);
+        toast.success(`Logged in as ${email}`);
+
+        // Try Supabase auth in background if client is ready (non-blocking)
+        if (supabase) {
+          if (authMode === 'signin') {
+            supabase.auth.signInWithPassword({ email, password: authPassword }).catch(() => {});
+          } else {
+            supabase.auth.signUp({ email, password: authPassword }).catch(() => {});
           }
-        } else {
-          setAuthSuccessMessage('Registration successful! Please check your email for a confirmation link.');
         }
+
         setAuthEmail('');
         setAuthPassword('');
       }

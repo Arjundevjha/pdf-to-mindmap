@@ -10,6 +10,8 @@
 
 # Local Log Files
 password_reset_log.txt
+*.log
+backend/server.log
 
 # Backend
 backend/venv/

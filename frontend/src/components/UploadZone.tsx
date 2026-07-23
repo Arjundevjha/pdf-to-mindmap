@@ -199,6 +199,10 @@ export function UploadZone({ onMindmapGenerated, selectedModel }: UploadZoneProp
         </p>
       </div>
 
+      <p className="text-slate-400 text-[11px] mt-2 text-center">
+        Note: A length of 15 to 25 pages is recommended for maximum effect
+      </p>
+
       {status !== 'idle' && (
         <div className="mt-4 p-4 border border-slate-200 bg-white">
           <div className="flex items-center justify-between mb-2">
