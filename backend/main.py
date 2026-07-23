@@ -170,7 +170,7 @@ def consolidate_summaries(sub_maps: list[dict]) -> str:
 
 class MindmapGenerateRequest(BaseModel):
     text: str
-    model: Optional[str] = "meta-llama/llama-4-scout-17b-16e-instruct"
+    model: Optional[str] = "llama-3.3-70b-versatile"
 
 def clean_json_string(response_text: str) -> str:
     """
@@ -421,7 +421,16 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
         "- Ensure the entire response is a single, valid JSON object matching the schema."
     )
     
-    selected_model = payload.model or "meta-llama/llama-4-scout-17b-16e-instruct"
+    raw_model = payload.model or "llama-3.3-70b-versatile"
+    
+    # Map non-existent or deprecated model strings to valid Groq Cloud models
+    MODEL_ALIASES = {
+        "meta-llama/llama-4-scout-17b-16e-instruct": "llama-3.3-70b-versatile",
+        "qwen/qwen3.6-27b": "llama-3.3-70b-versatile",
+        "qwen/qwen3-32b": "llama-3.3-70b-versatile",
+        "openai/gpt-oss-20b": "llama-3.3-70b-versatile",
+    }
+    selected_model = MODEL_ALIASES.get(raw_model, raw_model)
     word_count = len(payload.text.split())
     
     # Small models (Llama 3.1 8B) have a strict 6,000 TPM limit on the free tier.
@@ -441,12 +450,13 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
     }
     
     LARGE_POOL = [
-        "meta-llama/llama-4-scout-17b-16e-instruct",
         "llama-3.3-70b-versatile",
+        "mixtral-8x7b-32768",
         "llama-3.1-8b-instant"
     ]
     SMALL_POOL = [
-        "llama-3.1-8b-instant"
+        "llama-3.1-8b-instant",
+        "gemma2-9b-it"
     ]
 
     primary_model = selected_model
@@ -457,7 +467,7 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
         if word_count < 1500:
             primary_model = "llama-3.1-8b-instant"
         else:
-            primary_model = "meta-llama/llama-4-scout-17b-16e-instruct"
+            primary_model = "llama-3.3-70b-versatile"
 
     is_small_tier = primary_model in SMALL_POOL
     target_pool = SMALL_POOL if is_small_tier else LARGE_POOL

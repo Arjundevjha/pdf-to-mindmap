@@ -133,12 +133,11 @@ export default function App() {
     const saved = localStorage.getItem('pdf_mindmaps_model');
     const validModels = [
       'auto-smart-routing',
-      'meta-llama/llama-4-scout-17b-16e-instruct',
       'llama-3.3-70b-versatile',
-      'qwen/qwen3.6-27b',
-      'qwen/qwen3-32b',
-      'openai/gpt-oss-20b',
-      'llama-3.1-8b-instant'
+      'llama-3.1-8b-instant',
+      'mixtral-8x7b-32768',
+      'gemma2-9b-it',
+      'llama-3.2-11b-vision-preview'
     ];
     return (saved && validModels.includes(saved)) ? saved : 'auto-smart-routing';
   });
@@ -412,7 +411,7 @@ export default function App() {
       localStorage.clear();
       // Re-initialize default settings
       localStorage.setItem('pdf_mindmaps_focus_mode', 'false');
-      localStorage.setItem('pdf_mindmaps_model', 'meta-llama/llama-4-scout-17b-16e-instruct');
+      localStorage.setItem('pdf_mindmaps_model', 'llama-3.3-70b-versatile');
       if (emailCache) {
         localStorage.setItem('pdf_mindmaps_user', emailCache); // Keep user authenticated
       }
@@ -634,12 +633,11 @@ export default function App() {
               className="w-full text-xs bg-slate-50 border border-slate-200 text-slate-700 px-2.5 py-1.5 focus:outline-none focus:border-slate-300 font-medium select-none cursor-pointer rounded-none"
             >
               <option value="auto-smart-routing">Auto (Smart Routing) (Recommended)</option>
-              <option value="meta-llama/llama-4-scout-17b-16e-instruct">Llama 4 Scout (17B) (High Quality)</option>
               <option value="llama-3.3-70b-versatile">Llama 3.3 70B (High Quality)</option>
-              <option value="qwen/qwen3.6-27b">Qwen 3.6 27B</option>
-              <option value="qwen/qwen3-32b">Qwen 3 32B</option>
-              <option value="openai/gpt-oss-20b">GPT-OSS 20B</option>
               <option value="llama-3.1-8b-instant">Llama 3.1 8B (Fast)</option>
+              <option value="mixtral-8x7b-32768">Mixtral 8x7B (32k Context)</option>
+              <option value="gemma2-9b-it">Gemma 2 9B (Google)</option>
+              <option value="llama-3.2-11b-vision-preview">Llama 3.2 11B</option>
             </select>
           </div>
 

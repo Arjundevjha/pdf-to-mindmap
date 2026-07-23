@@ -3,12 +3,11 @@ import { Upload, AlertCircle, FileText, CheckCircle } from 'lucide-react';
 import { useToast } from './Toast';
 
 const getSingleModelFriendlyName = (id: string) => {
-  if (id.includes('llama-4-scout')) return 'Llama 4 Scout';
   if (id.includes('llama-3.3-70b')) return 'Llama 3.3 70B';
-  if (id.includes('qwen3.6') || id.includes('qwen3.6-27b')) return 'Qwen 3.6 27B';
-  if (id.includes('qwen3-32b')) return 'Qwen 3 32B';
-  if (id.includes('gpt-oss-20b')) return 'GPT-OSS 20B';
   if (id.includes('llama-3.1-8b')) return 'Llama 3.1 8B';
+  if (id.includes('mixtral')) return 'Mixtral 8x7B';
+  if (id.includes('gemma2')) return 'Gemma 2 9B';
+  if (id.includes('llama-3.2-11b')) return 'Llama 3.2 11B';
   return id;
 };
 
