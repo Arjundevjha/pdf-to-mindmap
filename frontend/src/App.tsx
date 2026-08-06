@@ -135,11 +135,16 @@ export default function App() {
       'auto-smart-routing',
       'llama-3.3-70b-versatile',
       'llama-3.1-8b-instant',
-      'mixtral-8x7b-32768',
       'gemma2-9b-it',
       'llama-3.2-11b-vision-preview'
     ];
     return (saved && validModels.includes(saved)) ? saved : 'auto-smart-routing';
+  });
+
+  const [selectedSubject, setSelectedSubject] = useState<string>(() => {
+    const saved = localStorage.getItem('pdf_mindmaps_subject');
+    const validSubjects = ['general', 'geography', 'history'];
+    return (saved && validSubjects.includes(saved)) ? saved : 'general';
   });
 
   // Undo history stack for expanded node states
@@ -175,6 +180,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('pdf_mindmaps_model', selectedModel);
   }, [selectedModel]);
+
+  useEffect(() => {
+    localStorage.setItem('pdf_mindmaps_subject', selectedSubject);
+  }, [selectedSubject]);
 
   // Hydrate user documents from Supabase database
   useEffect(() => {
@@ -633,17 +642,33 @@ export default function App() {
               className="w-full text-xs bg-slate-50 border border-slate-200 text-slate-700 px-2.5 py-1.5 focus:outline-none focus:border-slate-300 font-medium select-none cursor-pointer rounded-none"
             >
               <option value="auto-smart-routing">Auto (Smart Routing) (Recommended)</option>
-              <option value="llama-3.3-70b-versatile">Llama 3.3 70B (High Quality)</option>
-              <option value="llama-3.1-8b-instant">Llama 3.1 8B (Fast)</option>
-              <option value="mixtral-8x7b-32768">Mixtral 8x7B (32k Context)</option>
-              <option value="gemma2-9b-it">Gemma 2 9B (Google)</option>
-              <option value="llama-3.2-11b-vision-preview">Llama 3.2 11B</option>
+              <option value="llama-3.3-70b-versatile">Llama 3.3 70B (Best Quality)</option>
+              <option value="llama-3.1-8b-instant">Llama 3.1 8B (Fastest)</option>
+              <option value="gemma2-9b-it">Gemma 2 9B (Efficient)</option>
+              <option value="llama-3.2-11b-vision-preview">Llama 3.2 11B Vision</option>
+            </select>
+          </div>
+
+          <div className="mb-4">
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5 flex items-center gap-1">
+              <BookOpen className="w-3 h-3 text-slate-400" />
+              Subject Mode
+            </label>
+            <select
+              value={selectedSubject}
+              onChange={(e) => setSelectedSubject(e.target.value)}
+              className="w-full text-xs bg-slate-50 border border-slate-200 text-slate-700 px-2.5 py-1.5 focus:outline-none focus:border-slate-300 font-medium select-none cursor-pointer rounded-none"
+            >
+              <option value="general">General (Auto-detect)</option>
+              <option value="geography">Geography (Processes, Cycles, Diagrams)</option>
+              <option value="history">History (Timelines, Causality, Rationale)</option>
             </select>
           </div>
 
           <UploadZone 
             onMindmapGenerated={handleMindmapGenerated} 
-            selectedModel={selectedModel} 
+            selectedModel={selectedModel}
+            selectedSubject={selectedSubject}
           />
         </div>
 

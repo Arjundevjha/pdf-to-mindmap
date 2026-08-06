@@ -171,6 +171,7 @@ def consolidate_summaries(sub_maps: list[dict]) -> str:
 class MindmapGenerateRequest(BaseModel):
     text: str
     model: Optional[str] = "llama-3.3-70b-versatile"
+    subject: Optional[str] = "general"
 
 def clean_json_string(response_text: str) -> str:
     """
@@ -191,6 +192,172 @@ def clean_json_string(response_text: str) -> str:
         return response_text[start:end+1].strip()
         
     return response_text.strip()
+
+# Subject-specific system prompts
+def get_system_prompt(subject: str) -> str:
+    base_prompt = (
+        "You are an expert educational designer specializing in cognitive accessibility, ADHD-friendly learning, and data visualization.\n"
+        "Your task is to analyze the provided text and structure it into a hierarchical mindmap representation.\n"
+        "To make this ADHD-friendly and high-substance for research, you MUST adhere to the following rules:\n"
+        "1. Node Labels: Must be extremely scannable, flat summaries (maximum of 3 to 5 words per label).\n"
+        "2. Node Summaries: The 'summary' field for each node MUST be a single, flat JSON string value (enclosed in double quotes). It must NOT be a nested JSON object or list. It must follow this exact Markdown structure inside the string (using escaped newlines \\n):\n"
+        "   \"summary\": \"### Core Concept\\n- [4-5 sentences: DEEP explanation from the text. Include mechanisms, significance, nuances, context, and implications. Use the text's own explanations fully.]\\n\\n### Key Details\\n- **Key Term 1**: [Definition + significance from text]\\n- **Key Term 2**: [Definition + significance from text]\\n- **Mechanism/Process**: [Step-by-step or component breakdown from text]\\n\\n### Evidence & Case Studies\\n- **[Example Name]**: [Concrete case from text with data: place names, statistics, years, outcomes]\\n- **[Example Name]**: [Second case from text with different context/region]\\n- **[Counter-example/Edge Case]**: [Where the model differs per text — builds critical thinking]\\n\\n### Connection\\n- [1-2 sentences: How this links to parent, why it matters for the big picture, what question it answers]\\n\\n### Memory Hook\\n- [ONE vivid analogy, mnemonic, visual image, or 'aha!' insight from or inspired by the text]\")\n"
+        "   CRITICAL: Do NOT make 'summary' a JSON object or omit the double quotes around its value. It must be a plain JSON string containing the markdown text.\n"
+        "3. COVERAGE: Every distinct concept, stage, step, phase, component, argument, event, or case study in the source text MUST appear as a node. Do not summarize away content. Do not skip stages. Do not merge distinct ideas.\n"
+        "4. HIERARCHY: The tree structure must mirror the document's logical organization. If the text presents a cycle with 7 stages → 7 child nodes. If it presents 3 causes → 3 child nodes. If it presents a causal chain → chain structure.\n"
+        "5. SOURCE FIDELITY: Use ONLY information from the provided text. Do not add external knowledge. Do not invent examples not in the text. If the text has 2 case studies, use those 2. If it has 5, use 5.\n"
+        "6. Output format: Respond with a single valid JSON object containing no other text.\n\n"
+        "The JSON object must strictly conform to this recursive structure:\n"
+        "{\n"
+        "  \"id\": \"root\",\n"
+        "  \"label\": \"Central Topic\",\n"
+        "  \"summary\": \"### Core Concept\\n- [Overall document summary with thesis from text — 4-5 sentences]\\n\\n### Key Details\\n- **Key Term**: [Definition + why it matters from text]\\n\\n### Evidence & Case Studies\\n- **[Example]**: [Concrete case from text with data]\\n\\n### Connection\\n- [Main scope and significance]\\n\\n### Memory Hook\\n- [One vivid anchor for the entire topic]\",\n"
+        "  \"children\": [\n"
+        "    {\n"
+        "      \"id\": \"child-id-1\",\n"
+        "      \"label\": \"Subtopic Label\",\n"
+        "      \"summary\": \"### Core Concept\\n- [Deep explanation with mechanism/significance from text — 4-5 sentences]\\n\\n### Key Details\\n- **Key Term**: [Definition + significance from text]\\n\\n### Evidence & Case Studies\\n- **[Example]**: [Concrete case from text with data]\\n- **[Counter-example]**: [Where it differs per text]\\n\\n### Connection\\n- [Link to parent and big picture]\\n\\n### Memory Hook\\n- [Vivid analogy or mnemonic]\",\n"
+        "      \"children\": []\n"
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        "Ensure all children are formatted similarly, and nested hierarchies are created where logical.\n"
+        "JSON formatting safety guidelines:\n"
+        "- The 'summary' field MUST be a plain text string. Do NOT output it as an object with keys like '### Core Concept'.\n"
+        "- All text inside the 'summary' string must have its newlines escaped as \\n.\n"
+        "- Ensure the entire response is a single, valid JSON object matching the schema."
+)
+    
+    if subject == "geography":
+        return base_prompt + """
+
+SPECIALIZATION: GEOGRAPHY — Processes, Cycles, Systems & Spatial Patterns
+
+Geography IS concepts. Every model, cycle, process, theory, pattern, and relationship IS a concept. Dropping a concept = broken understanding. There are no "optional" concepts in geography.
+
+═══════════════════════════════════════════════════════════════
+MANDATORY JSON STRUCTURE — FOLLOW THIS EXACTLY
+═══════════════════════════════════════════════════════════════
+
+When text describes a CYCLE/MODEL/PROCESS (e.g., Butler's Tourism Area Life Cycle):
+
+CORRECT STRUCTURE:
+{
+  "id": "root",
+  "label": "Tourism Development",
+  "summary": "...",
+  "children": [
+    {
+      "id": "butler-cycle",
+      "label": "Butler Tourism Life Cycle",
+      "summary": "### Core Concept\\n- Butler's model describes how tourist destinations evolve through 6-7 predictable stages from discovery to saturation...\\n\\n### Key Details\\n- **Model origin**: C. Michael Butler, 1980\\n- **Key insight**: Destinations follow S-curve lifecycle unless rejuvenation occurs\\n\\n### Evidence & Case Studies\\n- **Phuket, Thailand**: Full cycle traced 1970s-present\\n- **Benidorm, Spain**: Early saturation, successful rejuvenation\\n\\n### Connection\\n- This cycle IS the framework for understanding all tourism development patterns.\\n\\n### Memory Hook\\n- \"Tourism destinations are like products — they have a life cycle from launch to maturity.\"",
+      "children": [
+        {"id": "stage-1", "label": "1. Exploration", "summary": "...", "children": []},
+        {"id": "stage-2", "label": "2. Involvement", "summary": "...", "children": []},
+        {"id": "stage-3", "label": "3. Development", "summary": "...", "children": []},
+        {"id": "stage-4", "label": "4. Consolidation", "summary": "...", "children": []},
+        {"id": "stage-5", "label": "5. Stagnation", "summary": "...", "children": []},
+        {"id": "stage-6", "label": "6. Decline/Rejuvenation", "summary": "...", "children": []}
+      ]
+    },
+    {
+      "id": "case-studies",
+      "label": "Case Studies",
+      "summary": "...",
+      "children": [
+        {"id": "phuket", "label": "Phuket, Thailand", "summary": "...", "children": []},
+        {"id": "bali", "label": "Bali, Indonesia", "summary": "...", "children": []}
+      ]
+    }
+  ]
+}
+
+WRONG:
+- Put stages in "Key Details" instead of as child nodes
+- Missing stages (only 2 of 6-7)
+- No Case Studies branch
+- Generic examples without data from text
+
+═══════════════════════════════════════════════════════════════
+RULES — NO EXCEPTIONS
+═══════════════════════════════════════════════════════════════
+
+1. EVERY STAGE = SEPARATE CHILD NODE. Butler has 6 stages → 6 children. DTM has 5 stages → 5 children. Hydrological cycle has 6 steps → 6 children. NO EXCEPTIONS.
+
+2. STAGES IN ORDER. Number them: "1. Exploration", "2. Involvement", etc.
+
+3. CASE STUDIES = SEPARATE BRANCH. After all stages, add a "Case Studies" node with case study children (use ALL case studies from the text).
+
+4. EACH STAGE NODE GETS FULL SUMMARY — NO TRUNCATION, NO OMISSIONS:
+   - Core Concept (4-5 sentences): What happens in THIS stage, mechanisms, indicators, triggers for transition, spatial characteristics. Use ALL text details about this stage.
+   - Key Details: Key terms, visitor numbers, infrastructure type, local vs external control, economic characteristics, policy context, environmental conditions — EVERYTHING the text says about this stage.
+   - Evidence & Case Studies: Specific evidence FOR THIS STAGE from case studies in text (e.g., "Phuket 1970s: <500 visitors/yr, no hotels, backpacker-focused"). If text gives data for this stage, include it.
+   - Connection: How THIS stage leads to NEXT stage — specific mechanisms, pressures, changes that drive transition.
+   - Memory Hook: Visual/analogy for THIS stage that makes it memorable.
+
+   CRITICAL: If the text describes 8 characteristics of the Exploration stage, ALL 8 go in that node's summary. Do not cherry-pick. Do not stop early. The stage node MUST represent the FULL textual treatment of that stage.
+
+═══════════════════════════════════════════════════════════════
+CONCEPTS ARE SACRED — NEVER DROP, MERGE, OR SKIP
+═══════════════════════════════════════════════════════════════
+
+- If the text names a concept (model, theory, cycle, process, pattern, law, hypothesis, framework), it GETS A NODE. Period.
+- Butler's Cycle = node. Christaller's Central Place Theory = node. Bid-Rent Theory = node. Demographic Transition Model = node. Rostow's Stages = node. Malthusian Theory = node. Boserup's Theory = node. Every. Single. One.
+- If the text discusses 3 theories of urban growth → 3 child nodes. If it contrasts 2 models of migration → 2 child nodes.
+- Do not "summarize" concepts into a single "Theories" node. Each concept has distinct mechanisms, assumptions, predictions — they are NOT interchangeable.
+
+═══════════════════════════════════════════════════════════════
+OTHER GEOGRAPHY PRINCIPLES
+═══════════════════════════════════════════════════════════════
+
+- SPATIAL LOGIC = CAUSAL LOGIC: "Why HERE?" → "Because of THIS process" → "Leading to THAT pattern"
+- DIAGRAM-READY: Organize Input → Process → Output, Cause → Effect → Spatial Pattern
+- SPECIFICITY: Place names, years, statistics, outcomes from the TEXT. "Tourism in Thailand" → "Phuket: 1970s Exploration → 1990s Consolidation → 2004 Tsunami → Rejuvenation via luxury" (if text says this)
+- NO REPETITION: Same concept in different contexts = separate nodes with distinct angles
+- SOURCE FIDELITY: Use ONLY the provided text. Do not add external knowledge. If the text has 2 case studies, use those 2. If it has 5, use 5."""
+
+    elif subject == "history":
+        return base_prompt + """
+
+SPECIALIZATION: HISTORY — Causal Chains, Rationale, Interconnected Narrative
+
+History is understanding HOW one thing leads to another — the reasoning behind actions, the weight of decisions, the ripple effects. Not dates. CAUSALITY.
+
+CORE PRINCIPLES (apply intuitively):
+
+1. THE BACKBONE IS CAUSAL, NOT THEMATIC
+   - Don't create "Political Causes" / "Economic Causes" branches. That kills the narrative.
+   - Build: Root Cause → Trigger → Event → Consequence → Next Trigger → Next Event...
+   - The hierarchy IS the timeline. Parent causes child. Child becomes parent to next.
+   - Example: Versailles (1919) → German resentment → Hitler's rise (1933) → Remilitarization (1936) → Anschluss (1938) → Munich (1938) → Invasion of Poland (1939) → WWII
+   - Each node = ONE event/action with its RATIONALE (why they did it) and CONSEQUENCE (what it enabled).
+
+2. RATIONALE IS NON-NEGOTIABLE
+   - Every major node MUST explain the actor's reasoning: strategic, ideological, economic, domestic political.
+   - "Japan attacks Pearl Harbor" → WHY? Oil embargo → resource starvation → calculated gamble to knock out US Pacific Fleet → buy time for Southeast Asian conquest.
+   - Without rationale, history is just trivia. With rationale, it's a logic puzzle the brain can solve.
+
+3. INTERCONNECTIONS = THE REAL STORY
+   - European theater ↔ Pacific theater (shared resources, diplomatic signals)
+   - Economic pressure → Political decision → Military action → Economic consequence
+   - Long-term structural forces + Short-term triggers = Event
+   - Show branching: One cause → multiple consequences. Multiple causes → one event.
+
+4. TEMPORAL SEQUENCE IS STRUCTURE
+   - Dates in labels or summaries where they matter for causality. "1931 Manchurian Incident" not just "Manchurian Incident"
+   - The order of nodes IS the argument.
+
+5. NO EVENT APPEARS TWICE
+   - If WWII appears in both European and Pacific contexts, make it ONE node with two child branches showing the different theaters' causal paths FROM that shared node.
+
+6. EXAMPLES = ILLUSTRATIVE DEPTH, NOT DECORATION
+   - "Appeasement" → Munich 1938: Chamberlain's reasoning (buy time, avoid war, moral reluctance) + Hitler's reading (weakness, green light)
+   - Counter-examples where policy differed: "Not appeased: Czechoslovakia 1939" → shows the pattern's limits
+
+The mindmap should read like a causal narrative you can walk through — each step making the next inevitable in retrospect, surprising in prospect."""
+
+    else:
+        return base_prompt
 
 @app.get("/api/health")
 def health_check():
@@ -389,37 +556,9 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
             detail="Groq API Key is not configured. Please set the GROQ_API_KEY environment variable."
         )
     
-    # Prepare the prompt structure
-    system_prompt = (
-        "You are an expert educational designer specializing in cognitive accessibility, ADHD-friendly learning, and data visualization.\n"
-        "Your task is to analyze the provided text and structure it into a hierarchical mindmap representation.\n"
-        "To make this ADHD-friendly and high-substance for research, you MUST adhere to the following rules:\n"
-        "1. Node Labels: Must be extremely scannable, flat summaries (maximum of 3 to 5 words per label).\n"
-        "2. Node Summaries: The 'summary' field for each node MUST be a single, flat JSON string value (enclosed in double quotes). It must NOT be a nested JSON object or list. It must follow this exact Markdown structure inside the string (using escaped newlines \\n):\n"
-        "   \"summary\": \"### Core Concept\\n- [1-2 sentences explaining the core factual concept in depth]\\n\\n### Examples\\n- **[Example Name]**: [1 concrete, specific example or case study from the text]\\n- **[Example Name]**: [A second concrete, specific example from the text]\\n\\n### Connection\\n- [1 sentence explaining how this subtopic links back to its parent subtopic and helps support the main central topic]\"\n"
-        "   CRITICAL: Do NOT make 'summary' a JSON object or omit the double quotes around its value. It must be a plain JSON string containing the markdown text.\n"
-        "3. Coherent Hierarchy: Build a clear hierarchy from themes to concepts to specific details.\n"
-        "4. Output format: Respond with a single valid JSON object containing no other text.\n\n"
-        "The JSON object must strictly conform to this recursive structure:\n"
-        "{\n"
-        "  \"id\": \"root\",\n"
-        "  \"label\": \"Central Topic\",\n"
-        "  \"summary\": \"### Core Concept\\n- [Overall document summary]\\n\\n### Examples\\n- **[Example]**: [Doc example]\\n\\n### Connection\\n- [Main scope]\",\n"
-        "  \"children\": [\n"
-        "    {\n"
-        "      \"id\": \"child-id-1\",\n"
-        "      \"label\": \"Subtopic Label\",\n"
-        "      \"summary\": \"### Core Concept\\n- [Subtopic concept]\\n\\n### Examples\\n- **[Example]**: [Subtopic example]\\n\\n### Connection\\n- [Relation to parent and root]\",\n"
-        "      \"children\": []\n"
-        "    }\n"
-        "  ]\n"
-        "}\n"
-        "Ensure all children are formatted similarly, and nested hierarchies are created where logical.\n"
-        "JSON formatting safety guidelines:\n"
-        "- The 'summary' field MUST be a plain text string. Do NOT output it as an object with keys like '### Core Concept'.\n"
-        "- All text inside the 'summary' string must have its newlines escaped as \\n.\n"
-        "- Ensure the entire response is a single, valid JSON object matching the schema."
-    )
+    # Use subject-specific system prompt
+    subject = payload.subject or "general"
+    system_prompt = get_system_prompt(subject)
     
     raw_model = payload.model or "llama-3.3-70b-versatile"
     
@@ -451,8 +590,6 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
     
     LARGE_POOL = [
         "llama-3.3-70b-versatile",
-        "mixtral-8x7b-32768",
-        "llama-3.1-8b-instant"
     ]
     SMALL_POOL = [
         "llama-3.1-8b-instant",

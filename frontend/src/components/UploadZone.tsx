@@ -4,8 +4,8 @@ import { useToast } from './Toast';
 
 const getSingleModelFriendlyName = (id: string) => {
   if (id.includes('llama-3.3-70b')) return 'Llama 3.3 70B';
+  if (id.includes('llama-3.1-70b')) return 'Llama 3.1 70B';
   if (id.includes('llama-3.1-8b')) return 'Llama 3.1 8B';
-  if (id.includes('mixtral')) return 'Mixtral 8x7B';
   if (id.includes('gemma2')) return 'Gemma 2 9B';
   if (id.includes('llama-3.2-11b')) return 'Llama 3.2 11B';
   return id;
@@ -25,9 +25,10 @@ const getModelFriendlyName = (modelId: string | null) => {
 interface UploadZoneProps {
   onMindmapGenerated: (filename: string, data: any) => void;
   selectedModel: string;
+  selectedSubject: string;
 }
 
-export function UploadZone({ onMindmapGenerated, selectedModel }: UploadZoneProps) {
+export function UploadZone({ onMindmapGenerated, selectedModel, selectedSubject }: UploadZoneProps) {
   const toast = useToast();
   const [dragActive, setDragActive] = useState(false);
   const [status, setStatus] = useState<'idle' | 'extracting' | 'generating' | 'success' | 'error'>('idle');
@@ -127,6 +128,7 @@ export function UploadZone({ onMindmapGenerated, selectedModel }: UploadZoneProp
         body: JSON.stringify({
           text: extractedText,
           model: selectedModel,
+          subject: selectedSubject,
         }),
       });
 
