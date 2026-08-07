@@ -134,8 +134,9 @@ export default function App() {
     const validModels = [
       'auto-smart-routing',
       'llama-3.3-70b-versatile',
+      'openai/gpt-oss-120b',
       'llama-3.1-8b-instant',
-      'gemma2-9b-it',
+      'openai/gpt-oss-20b',
       'llama-3.2-11b-vision-preview'
     ];
     return (saved && validModels.includes(saved)) ? saved : 'auto-smart-routing';
@@ -642,10 +643,15 @@ export default function App() {
               className="w-full text-xs bg-slate-50 border border-slate-200 text-slate-700 px-2.5 py-1.5 focus:outline-none focus:border-slate-300 font-medium select-none cursor-pointer rounded-none"
             >
               <option value="auto-smart-routing">Auto (Smart Routing) (Recommended)</option>
-              <option value="llama-3.3-70b-versatile">Llama 3.3 70B (Best Quality)</option>
-              <option value="llama-3.1-8b-instant">Llama 3.1 8B (Fastest)</option>
-              <option value="gemma2-9b-it">Gemma 2 9B (Efficient)</option>
-              <option value="llama-3.2-11b-vision-preview">Llama 3.2 11B Vision</option>
+              <optgroup label="Large Models (High Quality)">
+                <option value="llama-3.3-70b-versatile">Llama 3.3 70B (Best Quality)</option>
+                <option value="openai/gpt-oss-120b">GPT-OSS 120B (OpenAI Open)</option>
+              </optgroup>
+              <optgroup label="Small Models (Fast & Efficient)">
+                <option value="llama-3.1-8b-instant">Llama 3.1 8B (Fastest)</option>
+                <option value="openai/gpt-oss-20b">GPT-OSS 20B (Fast)</option>
+              </optgroup>
+              <option value="llama-3.2-11b-vision-preview">Llama 3.2 11B Vision (Preview)</option>
             </select>
           </div>
 

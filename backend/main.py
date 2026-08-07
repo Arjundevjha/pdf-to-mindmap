@@ -235,9 +235,9 @@ SPECIALIZATION: GEOGRAPHY — Processes, Cycles, Systems & Spatial Patterns
 
 Geography IS concepts. Every model, cycle, process, theory, pattern, and relationship IS a concept. Dropping a concept = broken understanding. There are no "optional" concepts in geography.
 
-═══════════════════════════════════════════════════════════════
+===============================================================
 MANDATORY JSON STRUCTURE — FOLLOW THIS EXACTLY
-═══════════════════════════════════════════════════════════════
+===============================================================
 
 When text describes a CYCLE/MODEL/PROCESS (e.g., Butler's Tourism Area Life Cycle):
 
@@ -278,9 +278,9 @@ WRONG:
 - No Case Studies branch
 - Generic examples without data from text
 
-═══════════════════════════════════════════════════════════════
+===============================================================
 RULES — NO EXCEPTIONS
-═══════════════════════════════════════════════════════════════
+===============================================================
 
 1. EVERY STAGE = SEPARATE CHILD NODE. Butler has 6 stages → 6 children. DTM has 5 stages → 5 children. Hydrological cycle has 6 steps → 6 children. NO EXCEPTIONS.
 
@@ -297,24 +297,42 @@ RULES — NO EXCEPTIONS
 
    CRITICAL: If the text describes 8 characteristics of the Exploration stage, ALL 8 go in that node's summary. Do not cherry-pick. Do not stop early. The stage node MUST represent the FULL textual treatment of that stage.
 
-═══════════════════════════════════════════════════════════════
+===============================================================
 CONCEPTS ARE SACRED — NEVER DROP, MERGE, OR SKIP
-═══════════════════════════════════════════════════════════════
+===============================================================
 
 - If the text names a concept (model, theory, cycle, process, pattern, law, hypothesis, framework), it GETS A NODE. Period.
 - Butler's Cycle = node. Christaller's Central Place Theory = node. Bid-Rent Theory = node. Demographic Transition Model = node. Rostow's Stages = node. Malthusian Theory = node. Boserup's Theory = node. Every. Single. One.
 - If the text discusses 3 theories of urban growth → 3 child nodes. If it contrasts 2 models of migration → 2 child nodes.
 - Do not "summarize" concepts into a single "Theories" node. Each concept has distinct mechanisms, assumptions, predictions — they are NOT interchangeable.
 
-═══════════════════════════════════════════════════════════════
+===============================================================
 OTHER GEOGRAPHY PRINCIPLES
-═══════════════════════════════════════════════════════════════
+===============================================================
 
 - SPATIAL LOGIC = CAUSAL LOGIC: "Why HERE?" → "Because of THIS process" → "Leading to THAT pattern"
 - DIAGRAM-READY: Organize Input → Process → Output, Cause → Effect → Spatial Pattern
 - SPECIFICITY: Place names, years, statistics, outcomes from the TEXT. "Tourism in Thailand" → "Phuket: 1970s Exploration → 1990s Consolidation → 2004 Tsunami → Rejuvenation via luxury" (if text says this)
 - NO REPETITION: Same concept in different contexts = separate nodes with distinct angles
-- SOURCE FIDELITY: Use ONLY the provided text. Do not add external knowledge. If the text has 2 case studies, use those 2. If it has 5, use 5."""
+- SOURCE FIDELITY: Use ONLY the provided text. Do not add external knowledge. If the text has 2 case studies, use those 2. If it has 5, use 5.
+
+======================================================================
+VERIFICATION CHECKLIST - BEFORE OUTPUT, CONFIRM EVERY ITEM:
+======================================================================
+
+[ ] Every named cycle/model/process/theory in text has a parent node
+[ ] Every stage/step/phase of each cycle has its OWN child node (numbered, in order)
+[ ] Every case study mentioned appears under "Case Studies" branch
+[ ] Every key term/concept defined in text appears in relevant node\'s Key Details
+[ ] Every statistic/place name/year from text included in appropriate node
+[ ] NO content from text is missing from the mindmap
+[ ] NO stage is described in "Key Details" instead of as a child node
+[ ] NO stages are missing (count them: Butler=6-7, DTM=5, Hydrological=6, etc.)
+[ ] Each stage node has FULL summary (Core Concept 4-5 sent, Key Details, Evidence, Connection, Memory Hook)
+
+IF YOU CANNOT CHECK ALL BOXES, FIX THE OUTPUT BEFORE RETURNING."""
+
+
 
     elif subject == "history":
         return base_prompt + """
@@ -568,16 +586,17 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
         "qwen/qwen3.6-27b": "llama-3.3-70b-versatile",
         "qwen/qwen3-32b": "llama-3.3-70b-versatile",
         "openai/gpt-oss-20b": "llama-3.3-70b-versatile",
+        "deepseek-r1-distill-llama-70b": "llama-3.3-70b-versatile",
     }
     selected_model = MODEL_ALIASES.get(raw_model, raw_model)
     word_count = len(payload.text.split())
     
     # Small models (Llama 3.1 8B) have a strict 6,000 TPM limit on the free tier.
-    # We reduce chunk size to 15,000 characters (approx 3,000 tokens) if a small model is involved or if we distribute chunks.
+    # We reduce chunk size to 10,000 characters (approx 2,000 tokens) if a small model is involved or if we distribute chunks.
     if selected_model in ["llama-3.1-8b-instant", "auto-smart-routing"] or len(payload.text) > 30000:
-        chunk_size = 15000
+        chunk_size = 10000
     else:
-        chunk_size = 30000
+        chunk_size = 20000
         
     # Split full text into chunks (limit to maximum 5 chunks)
     chunks = split_text_into_chunks(payload.text, chunk_size=chunk_size)[:5]
@@ -590,10 +609,11 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
     
     LARGE_POOL = [
         "llama-3.3-70b-versatile",
+        "openai/gpt-oss-120b",
     ]
     SMALL_POOL = [
         "llama-3.1-8b-instant",
-        "gemma2-9b-it"
+        "openai/gpt-oss-20b",
     ]
 
     primary_model = selected_model
@@ -606,19 +626,58 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
         else:
             primary_model = "llama-3.3-70b-versatile"
 
+    def assess_chunk_complexity(text: str) -> float:
+        """Assess chunk complexity (0-1) based on heuristics: density of proper nouns, numbers, technical terms, sentence complexity."""
+        import re
+        words = text.split()
+        if not words:
+            return 0.5
+        
+        # Heuristics for complexity
+        proper_nouns = len(re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', text))
+        numbers = len(re.findall(r'\b\d+(?:[.,]\d+)?\b', text))
+        technical_terms = len(re.findall(r'\b(?:model|theory|cycle|process|stage|phase|mechanism|framework|hypothesis|law|principle|concept|pattern|system|structure|function|relationship|interaction|distribution|correlation|causality|significance|implication|factor|variable|parameter|indicator|metric|statistic|data|evidence|case study|example|instance|application|implementation)\b', text, re.IGNORECASE))
+        long_sentences = len([s for s in re.split(r'[.!?]+', text) if len(s.split()) > 25])
+        avg_word_len = sum(len(w) for w in words) / len(words)
+        
+        # Normalize and combine
+        score = (
+            min(proper_nouns / max(len(words) * 0.05, 1), 1.0) * 0.25 +
+            min(numbers / max(len(words) * 0.03, 1), 1.0) * 0.2 +
+            min(technical_terms / max(len(words) * 0.02, 1), 1.0) * 0.25 +
+            min(long_sentences / max(len(words) * 0.01, 1), 1.0) * 0.15 +
+            min((avg_word_len - 4) / 4, 1.0) * 0.15
+        )
+        return max(0.0, min(1.0, score))
+
     is_small_tier = primary_model in SMALL_POOL
     target_pool = SMALL_POOL if is_small_tier else LARGE_POOL
 
+    # Assess complexity for each chunk
+    chunk_complexities = [assess_chunk_complexity(chunk) for chunk in chunks]
+    avg_complexity = sum(chunk_complexities) / len(chunk_complexities) if chunk_complexities else 0.5
+
     chunk_models = []
-    for idx in range(len(chunks)):
+    for idx, complexity in enumerate(chunk_complexities):
         if idx == 0:
+            # First chunk gets primary model
             chunk_models.append(primary_model)
         else:
-            others = [m for m in target_pool if m != primary_model]
-            if not others:
-                others = target_pool
+            # Route based on complexity: high complexity -> large pool, low -> small pool
+            if complexity > avg_complexity:
+                # More complex: use large pool
+                others = [m for m in LARGE_POOL if m != primary_model]
+                if not others:
+                    others = LARGE_POOL
+            else:
+                # Less complex: use small pool
+                others = [m for m in SMALL_POOL]
             model_to_use = others[(idx - 1) % len(others)]
             chunk_models.append(model_to_use)
+
+    # Track last request time per model to space out requests and avoid rate limits
+    model_last_request: dict[str, float] = {}
+    MIN_REQUEST_INTERVAL = 3.0  # seconds between requests to same model (increased for free tier)
 
     unique_models_used = []
     for m in chunk_models:
@@ -633,31 +692,47 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
 
     async def process_chunk(client: httpx.AsyncClient, chunk_text: str, index: int) -> dict:
         chunk_model = chunk_models[index]
+        
+        # Space out requests to the same model
+        import time
+        now = time.monotonic()
+        if chunk_model in model_last_request:
+            elapsed = now - model_last_request[chunk_model]
+            if elapsed < MIN_REQUEST_INTERVAL:
+                wait_time = MIN_REQUEST_INTERVAL - elapsed
+                logger.info(f"Spacing request for model {chunk_model}: waiting {wait_time:.2f}s")
+                await asyncio.sleep(wait_time)
+        model_last_request[chunk_model] = time.monotonic()
+        
         user_prompt = f"Here is the text extracted from Part {index+1} of the document to turn into a mindmap:\n\n{chunk_text}"
         
-        data = {
-            "model": chunk_model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"}
-        }
+        # Try with JSON mode first, fallback to non-JSON if model doesn't support it
+        use_json_mode = True
         
         max_retries = 3
-        backoff_factor = 2.0
+        backoff_factor = 3.0
         
         for attempt in range(max_retries + 1):
             try:
-                logger.info(f"Sending Groq API request for Chunk {index+1} (Attempt {attempt+1}/{max_retries+1}) using model: {chunk_model}")
+                data = {
+                    "model": chunk_model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "temperature": 0.2,
+                }
+                if use_json_mode:
+                    data["response_format"] = {"type": "json_object"}
+                
+                logger.info(f"Sending Groq API request for Chunk {index+1} (Attempt {attempt+1}/{max_retries+1}) using model: {chunk_model}, json_mode={use_json_mode}")
                 response = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data)
                 
                 # Handle standard HTTP 429 Too Many Requests
                 if response.status_code == 429:
                     if attempt < max_retries:
                         retry_after = response.headers.get("retry-after")
-                        sleep_seconds = float(retry_after) if retry_after else (backoff_factor ** attempt + random.uniform(1.5, 3.5))
+                        sleep_seconds = float(retry_after) if retry_after else (backoff_factor ** attempt + random.uniform(5.0, 10.0))
                         logger.warning(f"Rate limit hit (429) on chunk {index+1} for model {chunk_model}. Retrying in {sleep_seconds:.2f}s...")
                         await asyncio.sleep(sleep_seconds)
                         continue
@@ -674,11 +749,20 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
                         pass
                     
                     error_msg = resp_json.get("error", {}).get("message", "")
+                    error_code = resp_json.get("error", {}).get("code", "")
+                    
+                    # Handle JSON validation failure - fallback to non-JSON mode
+                    if error_code == "json_validate_failed" and use_json_mode:
+                        logger.warning(f"JSON validation failed for chunk {index+1} with model {chunk_model}. Falling back to non-JSON mode.")
+                        use_json_mode = False
+                        if attempt < max_retries:
+                            await asyncio.sleep(1.0)
+                            continue
                     
                     # Sometimes rate limits return as 400 or other codes on some Gateways
                     if "rate limit" in error_msg.lower() or "tpm" in error_msg.lower() or "rpm" in error_msg.lower():
                         if attempt < max_retries:
-                            sleep_seconds = backoff_factor ** attempt + random.uniform(2.0, 5.0)
+                            sleep_seconds = backoff_factor ** attempt + random.uniform(8.0, 15.0)
                             logger.warning(f"Rate limit error message detected on chunk {index+1} for model {chunk_model}. Retrying in {sleep_seconds:.2f}s...")
                             await asyncio.sleep(sleep_seconds)
                             continue
@@ -714,7 +798,7 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
                         
             except httpx.HTTPError as http_err:
                 if attempt < max_retries:
-                    sleep_seconds = backoff_factor ** attempt + random.uniform(1.0, 2.5)
+                    sleep_seconds = backoff_factor ** attempt + random.uniform(3.0, 6.0)
                     logger.warning(f"HTTP error on chunk {index+1} (Attempt {attempt+1}): {str(http_err)}. Retrying in {sleep_seconds:.2f}s...")
                     await asyncio.sleep(sleep_seconds)
                     continue
@@ -723,9 +807,13 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
 
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
-            # Process all chunks concurrently
-            tasks = [process_chunk(client, chunk, i) for i, chunk in enumerate(chunks)]
-            sub_maps = await asyncio.gather(*tasks)
+            # Process chunks SEQUENTIALLY to guarantee rate limit spacing works
+            # asyncio.gather runs in parallel which defeats per-model spacing
+            sub_maps = []
+            for i, chunk in enumerate(chunks):
+                logger.info(f"Processing chunk {i+1}/{len(chunks)} sequentially...")
+                result = await process_chunk(client, chunk, i)
+                sub_maps.append(result)
             
             if not sub_maps:
                 raise HTTPException(status_code=500, detail="No mindmaps could be generated.")

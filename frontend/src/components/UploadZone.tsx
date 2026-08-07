@@ -4,9 +4,9 @@ import { useToast } from './Toast';
 
 const getSingleModelFriendlyName = (id: string) => {
   if (id.includes('llama-3.3-70b')) return 'Llama 3.3 70B';
-  if (id.includes('llama-3.1-70b')) return 'Llama 3.1 70B';
+  if (id.includes('gpt-oss-120b')) return 'GPT-OSS 120B';
   if (id.includes('llama-3.1-8b')) return 'Llama 3.1 8B';
-  if (id.includes('gemma2')) return 'Gemma 2 9B';
+  if (id.includes('gpt-oss-20b')) return 'GPT-OSS 20B';
   if (id.includes('llama-3.2-11b')) return 'Llama 3.2 11B';
   return id;
 };
