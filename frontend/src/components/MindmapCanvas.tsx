@@ -18,6 +18,9 @@ export interface MindmapNode {
   id: string;
   label: string;
   summary: string;
+  imageUrl?: string;
+  imageCaption?: string;
+  imageAspectRatio?: number;
   children: MindmapNode[];
 }
 
@@ -25,6 +28,8 @@ interface FlatCustomNodeData {
   id: string;
   label: string;
   summary: string;
+  imageUrl?: string;
+  imageCaption?: string;
   hasChildren: boolean;
   isExpanded: boolean;
   isSelected: boolean;
@@ -32,15 +37,17 @@ interface FlatCustomNodeData {
   onToggleExpand: () => void;
 }
 
-// Define the custom node component
+// Define the custom node component with adaptive image frame
 function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
   const isSelected = data.isSelected;
   const isRoot = data.id === 'root';
+  const hasImage = Boolean(data.imageUrl);
 
   return (
     <div 
-      className={`relative px-4 py-3 bg-white border text-left min-h-[64px] w-[220px] flex items-center justify-between select-none cursor-pointer transition-colors duration-150
-        ${isSelected ? 'border-blue-500 ring-[1px] ring-blue-500 shadow-sm' : 'border-slate-200 hover:border-slate-300'}
+      className={`relative bg-white border text-left flex flex-col select-none cursor-pointer transition-all duration-150 rounded-md
+        ${hasImage ? 'w-[270px] p-3' : 'w-[240px] px-4 py-3 min-h-[64px] justify-between'}
+        ${isSelected ? 'border-blue-500 ring-[1px] ring-blue-500 shadow-md' : 'border-slate-200 hover:border-slate-300 shadow-sm'}
       `}
       onClick={data.onSelect}
     >
@@ -57,24 +64,49 @@ function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
         }} 
       />
       
-      <div className="flex-1 pr-6 py-0.5">
-        <span className="text-slate-700 text-xs font-semibold leading-normal font-sans block truncate-2-lines select-none">
-          {data.label}
-        </span>
-      </div>
-
-      {data.hasChildren && (
-        <button 
-          onClick={(e) => { 
-            e.stopPropagation(); 
-            data.onToggleExpand(); 
-          }}
-          className="absolute right-2 top-1/2 -translate-y-1/2 w-5 h-5 border border-slate-200 text-slate-500 flex items-center justify-center bg-slate-50 hover:bg-slate-100 text-[10px] font-bold select-none cursor-pointer focus:outline-none transition-colors"
-          aria-label={data.isExpanded ? 'Collapse node' : 'Expand node'}
-        >
-          {data.isExpanded ? '−' : '+'}
-        </button>
+      {/* Wikimedia Educational Image Card */}
+      {hasImage && (
+        <div className="mb-2.5 w-full bg-slate-100 rounded border border-slate-100 overflow-hidden flex flex-col items-center justify-center">
+          <img 
+            src={data.imageUrl} 
+            alt={data.imageCaption || data.label}
+            className="w-full max-h-[140px] object-cover rounded-t transition-opacity duration-200"
+            loading="lazy"
+            onError={(e) => {
+              // Hide image container on broken URL load
+              (e.target as HTMLElement).parentElement?.classList.add('hidden');
+            }}
+          />
+          {data.imageCaption && (
+            <div className="px-2 py-1 w-full bg-slate-50 border-t border-slate-100">
+              <span className="text-[10px] text-slate-500 font-sans block truncate italic">
+                {data.imageCaption}
+              </span>
+            </div>
+          )}
+        </div>
       )}
+
+      <div className="flex items-center justify-between flex-1">
+        <div className="flex-1 pr-6 py-0.5">
+          <span className="text-slate-700 text-xs font-semibold leading-normal font-sans block truncate-2-lines select-none">
+            {data.label}
+          </span>
+        </div>
+
+        {data.hasChildren && (
+          <button 
+            onClick={(e) => { 
+              e.stopPropagation(); 
+              data.onToggleExpand(); 
+            }}
+            className="absolute right-2.5 top-3 w-5 h-5 border border-slate-200 text-slate-500 flex items-center justify-center bg-slate-50 hover:bg-slate-100 text-[10px] font-bold select-none cursor-pointer focus:outline-none transition-colors rounded"
+            aria-label={data.isExpanded ? 'Collapse node' : 'Expand node'}
+          >
+            {data.isExpanded ? '−' : '+'}
+          </button>
+        )}
+      </div>
 
       {/* Source handle (outgoing links to children) */}
       <Handle 
@@ -102,7 +134,7 @@ interface MindmapCanvasProps {
 
 // Synchronous Dagre fallback if Web Worker is unavailable
 function runDagreLayoutSync(
-  rawNodes: Array<{ id: string }>, 
+  rawNodes: Array<{ id: string; width: number; height: number }>, 
   rawEdges: Array<{ id: string; source: string; target: string }>
 ): Record<string, { x: number; y: number }> {
   if (rawNodes.length === 0) return {};
@@ -118,7 +150,7 @@ function runDagreLayoutSync(
   });
   g.setDefaultEdgeLabel(() => ({}));
 
-  rawNodes.forEach((n) => g.setNode(n.id, { width: 220, height: 64 }));
+  rawNodes.forEach((n) => g.setNode(n.id, { width: n.width, height: n.height }));
   rawEdges.forEach((e) => g.setEdge(e.source, e.target));
 
   dagre.layout(g);
@@ -127,7 +159,7 @@ function runDagreLayoutSync(
   rawNodes.forEach((n) => {
     const dn = g.node(n.id);
     if (dn) {
-      positions[n.id] = { x: dn.x - 110, y: dn.y - 32 };
+      positions[n.id] = { x: dn.x - n.width / 2, y: dn.y - n.height / 2 };
     }
   });
 
@@ -175,21 +207,33 @@ export function MindmapCanvas({
       id: string;
       label: string;
       summary: string;
+      imageUrl?: string;
+      imageCaption?: string;
       hasChildren: boolean;
       isExpanded: boolean;
+      width: number;
+      height: number;
     }> = [];
     const edgeList: Array<{ id: string; source: string; target: string }> = [];
 
     function traverse(node: MindmapNode) {
       const isExpanded = expandedIds.has(node.id);
       const hasChildren = Boolean(node.children && node.children.length > 0);
+      const hasImage = Boolean(node.imageUrl);
+
+      const width = hasImage ? 270 : 240;
+      const height = hasImage ? 210 : 64;
 
       nodeList.push({
         id: node.id,
         label: node.label,
         summary: node.summary,
+        imageUrl: node.imageUrl,
+        imageCaption: node.imageCaption,
         hasChildren,
         isExpanded,
+        width,
+        height,
       });
 
       if (isExpanded && hasChildren) {
@@ -212,13 +256,14 @@ export function MindmapCanvas({
   // Dispatch layout calculation to Web Worker or fallback
   useEffect(() => {
     if (rawNodes.length === 0) {
-      setPositions({});
-      return;
+      const animFrame = requestAnimationFrame(() => setPositions({}));
+      return () => cancelAnimationFrame(animFrame);
     }
+
 
     if (workerRef.current) {
       const workerPayload: LayoutWorkerInput = {
-        nodes: rawNodes.map((n) => ({ id: n.id, width: 220, height: 64 })),
+        nodes: rawNodes.map((n) => ({ id: n.id, width: n.width, height: n.height })),
         edges: rawEdges,
         direction: 'LR',
       };
@@ -255,6 +300,8 @@ export function MindmapCanvas({
           id: node.id,
           label: node.label,
           summary: node.summary,
+          imageUrl: node.imageUrl,
+          imageCaption: node.imageCaption,
           hasChildren: node.hasChildren,
           isExpanded: node.isExpanded,
           isSelected: node.id === selectedNodeId,
