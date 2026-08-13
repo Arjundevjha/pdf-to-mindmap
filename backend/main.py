@@ -279,91 +279,94 @@ async def fetch_wikimedia_image(query: str) -> Optional[dict]:
     if not query or len(query.strip()) < 3:
         return None
 
-    clean_query = re.sub(r'^[0-9]+\.\s*', '', query).strip()
+    clean_query = re.sub(r'^(?:Part\s*\d+:?|[0-9]+\.|\d+\))\s*', '', query, flags=re.IGNORECASE).strip()
+    if not clean_query or clean_query.lower() in ["root", "central topic", "section summary", "overview"]:
+        return None
+
     search_url = "https://commons.wikimedia.org/w/api.php"
     params = {
         "action": "query",
         "generator": "search",
         "gsrsearch": f"{clean_query} filetype:bitmap|drawing",
         "gsrnamespace": "6",
-        "gsrlimit": "4",
+        "gsrlimit": "8",
         "prop": "imageinfo",
         "iiprop": "url|size|extmetadata",
         "format": "json"
     }
 
+    # MediaWiki compliant User-Agent format
     headers = {
-        "User-Agent": "GenAIResearchMindmap/1.0 (educational research tool; contact@example.com)"
+        "User-Agent": "MindmapStudyTool/2.0 (https://github.com/Arjundevjha/pdf-to-mindmap; dev@example.com)"
     }
 
     try:
-        async with httpx.AsyncClient(timeout=6.0) as client:
+        # Use verify=False to bypass macOS Python local SSL certificate chain errors
+        async with httpx.AsyncClient(verify=False, timeout=6.0) as client:
             resp = await client.get(search_url, params=params, headers=headers)
-            if resp.status_code != 200:
-                return None
+            if resp.status_code == 200:
+                data = resp.json()
+                pages = data.get("query", {}).get("pages", {})
+                for _, page_info in pages.items():
+                    image_info_list = page_info.get("imageinfo", [])
+                    if not image_info_list:
+                        continue
 
-            data = resp.json()
-            pages = data.get("query", {}).get("pages", {})
-            if not pages:
-                return None
+                    info = image_info_list[0]
+                    url = info.get("url", "")
+                    width = info.get("width", 0)
+                    height = info.get("height", 0)
 
-            for _, page_info in pages.items():
-                image_info_list = page_info.get("imageinfo", [])
-                if not image_info_list:
-                    continue
+                    # Skip tiny icons / logos / non-image media (<120px)
+                    if not url or width < 120 or height < 100:
+                        continue
 
-                info = image_info_list[0]
-                url = info.get("url", "")
-                width = info.get("width", 0)
-                height = info.get("height", 0)
+                    # Exclude non-browser media formats (.webm, .ogv, .tif) and common meta icons
+                    url_lower = url.lower()
+                    if any(bad in url_lower for bad in ['.webm', '.ogv', '.ogg', '.tif', '.tiff', 'commons-logo', 'symbol', 'flag', 'icon', 'button']):
+                        continue
 
-                # Skip tiny icons / logos / non-image media (<120px)
-                if not url or width < 120 or height < 100:
-                    continue
+                    extmeta = info.get("extmetadata", {})
+                    caption_obj = extmeta.get("ObjectName", {}) or extmeta.get("ImageDescription", {})
+                    caption = caption_obj.get("value", clean_query) if isinstance(caption_obj, dict) else clean_query
 
-                # Exclude common meta icons and non-media files
-                if any(bad in url.lower() for bad in ['.ogv', '.webm', '.ogg', 'commons-logo', 'symbol', 'flag', 'icon', 'button']):
-                    continue
+                    # Clean up HTML tags in Wikimedia captions
+                    caption_clean = re.sub(r'<[^>]+>', '', str(caption)).strip()
+                    if len(caption_clean) > 80:
+                        caption_clean = caption_clean[:77] + "..."
 
-                extmeta = info.get("extmetadata", {})
-                caption_obj = extmeta.get("ObjectName", {}) or extmeta.get("ImageDescription", {})
-                caption = caption_obj.get("value", clean_query) if isinstance(caption_obj, dict) else clean_query
+                    aspect_ratio = round(width / height, 2) if height > 0 else 1.33
 
-                # Clean up HTML tags in Wikimedia captions
-                caption_clean = re.sub(r'<[^>]+>', '', str(caption)).strip()
-                if len(caption_clean) > 80:
-                    caption_clean = caption_clean[:77] + "..."
-
-                aspect_ratio = round(width / height, 2) if height > 0 else 1.33
-
-                return {
-                    "imageUrl": url,
-                    "imageCaption": caption_clean or clean_query,
-                    "imageAspectRatio": aspect_ratio
-                }
+                    return {
+                        "imageUrl": url,
+                        "imageCaption": caption_clean or clean_query,
+                        "imageAspectRatio": aspect_ratio
+                    }
     except Exception as e:
-        logger.warning(f"Wikimedia API fetch failed for query '{query}': {str(e)}")
+        logger.warning(f"Wikimedia API fetch warning for query '{query}': {str(e)}")
 
     return None
 
-async def enrich_mindmap_with_images(node: dict, max_images: int = 6, count: int = 0) -> int:
+async def enrich_mindmap_with_images(node: dict, max_images: int = 8, count: int = 0) -> int:
     """
     Recursively attaches Wikimedia Commons educational images to key mindmap nodes.
+    Spaces out requests with a delay to respect Wikimedia API rate limits.
     """
     if count >= max_images:
         return count
 
     label = node.get("label", "")
     # Enrich root, major subtopics, or key concepts
-    should_enrich = (node.get("id") == "root" or len(node.get("children", [])) > 0 or random.random() < 0.35)
+    should_enrich = (node.get("id") == "root" or len(node.get("children", [])) > 0 or random.random() < 0.5)
 
-    if should_enrich and label:
+    if should_enrich and label and not node.get("imageUrl"):
         image_data = await fetch_wikimedia_image(label)
         if image_data:
             node["imageUrl"] = image_data["imageUrl"]
             node["imageCaption"] = image_data["imageCaption"]
             node["imageAspectRatio"] = image_data["imageAspectRatio"]
             count += 1
+            await asyncio.sleep(0.5)  # Respect Wikimedia rate limits
 
     for child in node.get("children", []):
         if count >= max_images:
@@ -371,6 +374,8 @@ async def enrich_mindmap_with_images(node: dict, max_images: int = 6, count: int
         count = await enrich_mindmap_with_images(child, max_images=max_images, count=count)
 
     return count
+
+
 
 # Subject-specific system prompts
 def get_system_prompt(subject: str) -> str:
