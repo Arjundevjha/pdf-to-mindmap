@@ -173,7 +173,24 @@ class MindmapGenerateRequest(BaseModel):
     model: Optional[str] = "llama-3.3-70b-versatile"
     subject: Optional[str] = "general"
 
+
+def clean_json_string(response_text: str) -> str:
+    """
+    Extracts and cleans a JSON block from the model's text response.
+    """
+    markdown_match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", response_text)
+    if markdown_match:
+        return markdown_match.group(1).strip()
+    
+    start = response_text.find('{')
+    end = response_text.rfind('}')
+    if start != -1 and end != -1 and end > start:
+        return response_text[start:end+1].strip()
+        
+    return response_text.strip()
+
 def repair_and_parse_json(response_text: str) -> dict:
+
     """
     Cleans, repairs, and parses LLM JSON responses into a Python dict.
     If the response was truncated mid-sentence or mid-object, it auto-repairs
