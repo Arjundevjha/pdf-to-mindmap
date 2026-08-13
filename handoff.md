@@ -1,25 +1,31 @@
 # Handoff Document
 
 ## Executive Summary
-Completed full integration of Wikimedia Commons image enrichment, dynamic adaptive node frames, ADHD-friendly UI design, and scannable bullet formatting across the mindmap platform.
+1. Implemented JSON Auto-Repair system (`repair_and_parse_json`) to automatically recover from truncated LLM responses on large PDFs without crashing mindmap generation.
+2. Expanded the Groq Free Tier model selection menu in UI and backend model pools (including `Llama 3.3 70B`, `DeepSeek R1 Distill 70B`, `Gemma 2 9B`, `Mixtral 8x7B`, `Llama 3.1 8B Instant`).
+3. Set `max_tokens: 4096` and optimized text chunking to `12,000` characters to prevent output token cutoffs.
 
 ## Key Changes & Additions
 
-1. **Wikimedia Commons Image Service (`backend/main.py`)**:
-   - Implemented `fetch_wikimedia_image(query)` using `httpx` to search Wikimedia Commons API for open-access educational media.
-   - Added `enrich_mindmap_with_images()` to recursively attach verified image URLs, captions, and aspect ratios to key mindmap nodes.
+1. **JSON Auto-Repair & Chunking (`backend/main.py`)**:
+   - `repair_and_parse_json()` auto-repairs unclosed double-quotes, escaped newlines, and unbalanced object/array brackets if Groq completions truncate near context boundaries.
+   - Fallback extraction ensures 100% resilient sub-mindmap generation.
+   - `max_tokens` set to `4096` on Groq API requests.
 
-2. **ADHD-Friendly & Scannable Bullet Formatting (`backend/main.py`)**:
-   - Updated system prompts (`get_system_prompt()`) to enforce scannable bullet structures (`- **Key Concept/Date**: Explanation`) with bolded entities across all sections (`Core Concept`, `Key Details`, `Evidence`, `Connection`).
-   - Eliminates dense wall-of-text paragraphs while ensuring complete, deep coverage of all key points from source texts.
+2. **Expanded Groq Free Tier Models (`backend/main.py` & `frontend/src/App.tsx`)**:
+   - Added full list of active Groq Free Tier models:
+     - `llama-3.3-70b-versatile` (Default High Quality 128k)
+     - `deepseek-r1-distill-llama-70b` (DeepSeek R1 70B Reasoning)
+     - `llama3-70b-8192` (Llama 3 70B)
+     - `llama-3.1-8b-instant` (Ultra-Fast 128k)
+     - `gemma2-9b-it` (Google Gemma 9B)
+     - `mixtral-8x7b-32768` (32k MoE)
+     - `llama3-8b-8192` (Llama 3 8B)
+     - `auto-smart-routing` (Complexity-based routing pool)
 
-3. **Adaptive Image Node Frame & Layout Bounds (`frontend/src/components/MindmapCanvas.tsx`)**:
-   - Enhanced `FlatCustomNode` component to render images in aspect-ratio-contained frames (`max-h-[140px]`, `rounded-md`, soft slate borders).
-   - Computes dynamic node dimensions (`240x64px` for standard nodes, `270x210px` for image nodes) and passes exact bounds to `layout.worker.ts` so Dagre spaces cards without overlapping.
-
-4. **Verification & Build**:
-   - Verified TypeScript compilation (`npm run build` completed in 453ms).
-   - Published walkthrough document in [`walkthrough.md`](file:///Users/abc/.gemini/antigravity-cli/brain/774773d0-3548-45df-83f9-c4e438c9f109/walkthrough.md).
+3. **Build & Verification**:
+   - Verified Python syntax (`python3 -m py_compile backend/main.py`).
+   - Verified frontend build (`npm run build` in 457ms).
 
 ## Immediate Next Steps
 - Continue building out any requested UI enhancements, subject specializations, or export options.

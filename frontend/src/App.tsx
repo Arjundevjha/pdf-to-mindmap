@@ -643,17 +643,20 @@ export default function App() {
               className="w-full text-xs bg-slate-50 border border-slate-200 text-slate-700 px-2.5 py-1.5 focus:outline-none focus:border-slate-300 font-medium select-none cursor-pointer rounded-none"
             >
               <option value="auto-smart-routing">Auto (Smart Routing) (Recommended)</option>
-              <optgroup label="Large Models (High Quality)">
-                <option value="llama-3.3-70b-versatile">Llama 3.3 70B (Best Quality)</option>
-                <option value="openai/gpt-oss-120b">GPT-OSS 120B (OpenAI Open)</option>
+              <optgroup label="70B / Large Models (Deep Substance)">
+                <option value="llama-3.3-70b-versatile">Llama 3.3 70B Versatile (Default - Best Quality)</option>
+                <option value="deepseek-r1-distill-llama-70b">DeepSeek R1 Distill 70B (Reasoning)</option>
+                <option value="llama3-70b-8192">Llama 3 70B (Standard 70B)</option>
               </optgroup>
-              <optgroup label="Small Models (Fast & Efficient)">
-                <option value="llama-3.1-8b-instant">Llama 3.1 8B (Fastest)</option>
-                <option value="openai/gpt-oss-20b">GPT-OSS 20B (Fast)</option>
+              <optgroup label="8B - 9B Models (Fast & Efficient)">
+                <option value="llama-3.1-8b-instant">Llama 3.1 8B Instant (Fastest - 128k Context)</option>
+                <option value="gemma2-9b-it">Gemma 2 9B IT (Google Gemma)</option>
+                <option value="mixtral-8x7b-32768">Mixtral 8x7B (32k MoE)</option>
+                <option value="llama3-8b-8192">Llama 3 8B (Standard 8B)</option>
               </optgroup>
-              <option value="llama-3.2-11b-vision-preview">Llama 3.2 11B Vision (Preview)</option>
             </select>
           </div>
+
 
           <div className="mb-4">
             <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5 flex items-center gap-1">

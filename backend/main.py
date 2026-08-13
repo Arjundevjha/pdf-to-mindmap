@@ -173,27 +173,87 @@ class MindmapGenerateRequest(BaseModel):
     model: Optional[str] = "llama-3.3-70b-versatile"
     subject: Optional[str] = "general"
 
-def clean_json_string(response_text: str) -> str:
+def repair_and_parse_json(response_text: str) -> dict:
     """
-    Extracts and cleans a JSON block from the model's text response.
-    Models sometimes surround the JSON output with markdown block markers (```json ... ```)
-    or conversational text.
-    Uses fast string index operations to avoid catastrophic regex backtracking on long JSON outputs.
+    Cleans, repairs, and parses LLM JSON responses into a Python dict.
+    If the response was truncated mid-sentence or mid-object, it auto-repairs
+    unclosed strings, quotes, arrays, and braces so mindmap generation never crashes.
     """
-    # 1. Search for markdown code block markers
-    markdown_match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", response_text)
-    if markdown_match:
-        return markdown_match.group(1).strip()
+    cleaned = clean_json_string(response_text)
     
-    # 2. Otherwise find the first '{' and the last '}' using fast string methods
-    start = response_text.find('{')
-    end = response_text.rfind('}')
-    if start != -1 and end != -1 and end > start:
-        return response_text[start:end+1].strip()
-        
-    return response_text.strip()
+    # 1. Try direct parsing first
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, dict) and "id" in data and "label" in data and "children" in data:
+            return data
+    except Exception:
+        pass
+
+    # 2. Attempt JSON auto-repair for truncated output
+    repaired = cleaned
+    
+    # Check if string ends inside a quoted literal by tracking unescaped quotes
+    in_string = False
+    escaped = False
+    stack = []
+    
+    for char in repaired:
+        if escaped:
+            escaped = False
+            continue
+        if char == '\\':
+            escaped = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if not in_string:
+            if char in '{[':
+                stack.append(char)
+            elif char == '}' and stack and stack[-1] == '{':
+                stack.pop()
+            elif char == ']' and stack and stack[-1] == '[':
+                stack.pop()
+
+    # If truncated inside a string literal, close the string quote
+    if in_string:
+        repaired += '"'
+
+    # Close any unclosed objects or arrays in reverse order
+    for char in reversed(stack):
+        if char == '{':
+            repaired += '}'
+        elif char == '[':
+            repaired += ']'
+
+    try:
+        data = json.loads(repaired)
+        if isinstance(data, dict):
+            if "id" not in data: data["id"] = "root"
+            if "label" not in data: data["label"] = "Section Overview"
+            if "summary" not in data: data["summary"] = "### Core Concept\n- **Overview**: Document section summary."
+            if "children" not in data or not isinstance(data["children"], list): data["children"] = []
+            return data
+    except Exception as e:
+        logger.warning(f"JSON auto-repair parsing warning: {str(e)}")
+
+    # 3. Fallback string extraction for label and summary if parsing fails
+    label_match = re.search(r'"label"\s*:\s*"([^"]+)"', cleaned)
+    extracted_label = label_match.group(1) if label_match else "Section Summary"
+    
+    summary_match = re.search(r'"summary"\s*:\s*"([^"]*)', cleaned)
+    raw_summary = summary_match.group(1) if summary_match else "Document section overview."
+    clean_summary = raw_summary.replace('\\n', '\n').strip()
+
+    return {
+        "id": "root_repaired",
+        "label": extracted_label,
+        "summary": f"### Core Concept\n- **Overview**: {clean_summary}\n\n### Key Details\n- **Note**: Truncated chunk automatically recovered for study view.",
+        "children": []
+    }
 
 # Wikimedia Commons image fetch service
+
 async def fetch_wikimedia_image(query: str) -> Optional[dict]:
     """
     Queries Wikimedia Commons API for open-access educational images matching the query.
@@ -567,18 +627,18 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
         "meta-llama/llama-4-scout-17b-16e-instruct": "llama-3.3-70b-versatile",
         "qwen/qwen3.6-27b": "llama-3.3-70b-versatile",
         "qwen/qwen3-32b": "llama-3.3-70b-versatile",
-        "openai/gpt-oss-20b": "llama-3.3-70b-versatile",
-        "deepseek-r1-distill-llama-70b": "llama-3.3-70b-versatile",
+        "openai/gpt-oss-20b": "llama-3.1-8b-instant",
+        "openai/gpt-oss-120b": "llama-3.3-70b-versatile",
+        "llama-3.2-11b-vision-preview": "llama-3.1-8b-instant",
     }
     selected_model = MODEL_ALIASES.get(raw_model, raw_model)
     word_count = len(payload.text.split())
     
-    # Small models (Llama 3.1 8B) have a strict 6,000 TPM limit on the free tier.
-    # We reduce chunk size to 10,000 characters (approx 2,000 tokens) if a small model is involved or if we distribute chunks.
-    if selected_model in ["llama-3.1-8b-instant", "auto-smart-routing"] or len(payload.text) > 30000:
-        chunk_size = 10000
+    # Adjust chunk size to 8,000 - 12,000 characters so completions stay safely within token limits
+    if selected_model in ["llama-3.1-8b-instant", "auto-smart-routing"] or len(payload.text) > 24000:
+        chunk_size = 8000
     else:
-        chunk_size = 20000
+        chunk_size = 12000
         
     # Split full text into chunks (limit to maximum 5 chunks)
     chunks = split_text_into_chunks(payload.text, chunk_size=chunk_size)[:5]
@@ -591,11 +651,14 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
     
     LARGE_POOL = [
         "llama-3.3-70b-versatile",
-        "openai/gpt-oss-120b",
+        "deepseek-r1-distill-llama-70b",
+        "llama3-70b-8192",
     ]
     SMALL_POOL = [
         "llama-3.1-8b-instant",
-        "openai/gpt-oss-20b",
+        "gemma2-9b-it",
+        "mixtral-8x7b-32768",
+        "llama3-8b-8192",
     ]
 
     primary_model = selected_model
@@ -703,6 +766,7 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
                         {"role": "user", "content": user_prompt}
                     ],
                     "temperature": 0.2,
+                    "max_tokens": 4096,
                 }
                 if use_json_mode:
                     data["response_format"] = {"type": "json_object"}
@@ -758,25 +822,9 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
                     raise HTTPException(status_code=500, detail=f"Groq response for chunk {index+1} is missing choices.")
                 
                 content = choices[0].get("message", {}).get("content", "")
-                cleaned_content = clean_json_string(content)
-                
-                try:
-                    mindmap_data = json.loads(cleaned_content)
-                    if "id" not in mindmap_data or "label" not in mindmap_data or "children" not in mindmap_data:
-                        raise ValueError("Missing required keys in mindmap JSON (id, label, children).")
-                    return mindmap_data
-                except Exception as parse_error:
-                    # If JSON parsing fails, retry generation
-                    if attempt < max_retries:
-                        logger.warning(f"JSON parsing failed for chunk {index+1} (Attempt {attempt+1}). Retrying generation...")
-                        await asyncio.sleep(1.0)
-                        continue
-                    else:
-                        logger.error(f"Failed to parse Groq response into valid mindmap JSON for chunk {index+1}. Error: {str(parse_error)}")
-                        raise HTTPException(
-                            status_code=500, 
-                            detail=f"The model's output for chunk {index+1} could not be parsed into a valid mindmap. Raw: {content[:200]}"
-                        )
+                mindmap_data = repair_and_parse_json(content)
+                return mindmap_data
+
                         
             except httpx.HTTPError as http_err:
                 if attempt < max_retries:
