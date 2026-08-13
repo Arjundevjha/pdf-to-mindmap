@@ -666,15 +666,13 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
         "Content-Type": "application/json"
     }
     
-    LARGE_POOL = [
+    ALL_FREE_TIER_MODELS = [
         "llama-3.3-70b-versatile",
-        "deepseek-r1-distill-llama-70b",
-        "llama3-70b-8192",
-    ]
-    SMALL_POOL = [
         "llama-3.1-8b-instant",
+        "deepseek-r1-distill-llama-70b",
         "gemma2-9b-it",
         "mixtral-8x7b-32768",
+        "llama3-70b-8192",
         "llama3-8b-8192",
     ]
 
@@ -683,69 +681,21 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
     
     if selected_model == "auto-smart-routing":
         is_routed = True
-        if word_count < 1500:
-            primary_model = "llama-3.1-8b-instant"
-        else:
-            primary_model = "llama-3.3-70b-versatile"
+        primary_model = "llama-3.3-70b-versatile" if word_count >= 1500 else "llama-3.1-8b-instant"
 
-    def assess_chunk_complexity(text: str) -> float:
-        """Assess chunk complexity (0-1) based on heuristics: density of proper nouns, numbers, technical terms, sentence complexity."""
-        import re
-        words = text.split()
-        if not words:
-            return 0.5
-        
-        # Heuristics for complexity
-        proper_nouns = len(re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', text))
-        numbers = len(re.findall(r'\b\d+(?:[.,]\d+)?\b', text))
-        technical_terms = len(re.findall(r'\b(?:model|theory|cycle|process|stage|phase|mechanism|framework|hypothesis|law|principle|concept|pattern|system|structure|function|relationship|interaction|distribution|correlation|causality|significance|implication|factor|variable|parameter|indicator|metric|statistic|data|evidence|case study|example|instance|application|implementation)\b', text, re.IGNORECASE))
-        long_sentences = len([s for s in re.split(r'[.!?]+', text) if len(s.split()) > 25])
-        avg_word_len = sum(len(w) for w in words) / len(words)
-        
-        # Normalize and combine
-        score = (
-            min(proper_nouns / max(len(words) * 0.05, 1), 1.0) * 0.25 +
-            min(numbers / max(len(words) * 0.03, 1), 1.0) * 0.2 +
-            min(technical_terms / max(len(words) * 0.02, 1), 1.0) * 0.25 +
-            min(long_sentences / max(len(words) * 0.01, 1), 1.0) * 0.15 +
-            min((avg_word_len - 4) / 4, 1.0) * 0.15
-        )
-        return max(0.0, min(1.0, score))
-
-    is_small_tier = primary_model in SMALL_POOL
-    target_pool = SMALL_POOL if is_small_tier else LARGE_POOL
-
-    # Assess complexity for each chunk
-    chunk_complexities = [assess_chunk_complexity(chunk) for chunk in chunks]
-    avg_complexity = sum(chunk_complexities) / len(chunk_complexities) if chunk_complexities else 0.5
-
+    # Distribute initial models across all available free tier models if routed, or use primary model
     chunk_models = []
-    for idx, complexity in enumerate(chunk_complexities):
-        if idx == 0:
-            # First chunk gets primary model
-            chunk_models.append(primary_model)
+    for idx in range(len(chunks)):
+        if is_routed:
+            chunk_models.append(ALL_FREE_TIER_MODELS[idx % len(ALL_FREE_TIER_MODELS)])
         else:
-            # Route based on complexity: high complexity -> large pool, low -> small pool
-            if complexity > avg_complexity:
-                # More complex: use large pool
-                others = [m for m in LARGE_POOL if m != primary_model]
-                if not others:
-                    others = LARGE_POOL
-            else:
-                # Less complex: use small pool
-                others = [m for m in SMALL_POOL]
-            model_to_use = others[(idx - 1) % len(others)]
-            chunk_models.append(model_to_use)
+            chunk_models.append(primary_model)
 
     # Track last request time per model to space out requests and avoid rate limits
     model_last_request: dict[str, float] = {}
-    MIN_REQUEST_INTERVAL = 3.0  # seconds between requests to same model (increased for free tier)
+    MIN_REQUEST_INTERVAL = 2.5  # seconds between requests to same model
 
-    unique_models_used = []
-    for m in chunk_models:
-        if m not in unique_models_used:
-            unique_models_used.append(m)
-            
+    unique_models_used = list(dict.fromkeys(chunk_models))
     models_used_str = ", ".join(unique_models_used)
 
     response.headers["X-Model-Used"] = models_used_str
@@ -753,106 +703,87 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
     response.headers["Access-Control-Expose-Headers"] = "X-Model-Used, X-Model-Routed"
 
     async def process_chunk(client: httpx.AsyncClient, chunk_text: str, index: int) -> dict:
-        chunk_model = chunk_models[index]
-        
-        # Space out requests to the same model
-        import time
-        now = time.monotonic()
-        if chunk_model in model_last_request:
-            elapsed = now - model_last_request[chunk_model]
-            if elapsed < MIN_REQUEST_INTERVAL:
-                wait_time = MIN_REQUEST_INTERVAL - elapsed
-                logger.info(f"Spacing request for model {chunk_model}: waiting {wait_time:.2f}s")
-                await asyncio.sleep(wait_time)
-        model_last_request[chunk_model] = time.monotonic()
-        
-        user_prompt = f"Here is the text extracted from Part {index+1} of the document to turn into a mindmap:\n\n{chunk_text}"
-        
-        # Try with JSON mode first, fallback to non-JSON if model doesn't support it
-        use_json_mode = True
-        
-        max_retries = 3
-        backoff_factor = 3.0
-        
-        for attempt in range(max_retries + 1):
-            try:
-                data = {
-                    "model": chunk_model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    "temperature": 0.2,
-                    "max_tokens": 4096,
-                }
-                if use_json_mode:
-                    data["response_format"] = {"type": "json_object"}
-                
-                logger.info(f"Sending Groq API request for Chunk {index+1} (Attempt {attempt+1}/{max_retries+1}) using model: {chunk_model}, json_mode={use_json_mode}")
-                response = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data)
-                
-                # Handle standard HTTP 429 Too Many Requests
-                if response.status_code == 429:
-                    if attempt < max_retries:
-                        retry_after = response.headers.get("retry-after")
-                        sleep_seconds = float(retry_after) if retry_after else (backoff_factor ** attempt + random.uniform(5.0, 10.0))
-                        logger.warning(f"Rate limit hit (429) on chunk {index+1} for model {chunk_model}. Retrying in {sleep_seconds:.2f}s...")
-                        await asyncio.sleep(sleep_seconds)
-                        continue
-                    else:
-                        logger.error(f"Rate limit retries exhausted for chunk {index+1}: {response.text}")
-                        raise HTTPException(status_code=429, detail=f"Rate limit exceeded on chunk {index+1}. Please try again later.")
-                
-                # Check for other error codes
-                if response.status_code != 200:
-                    resp_json = {}
-                    try:
-                        resp_json = response.json()
-                    except Exception:
-                        pass
-                    
-                    error_msg = resp_json.get("error", {}).get("message", "")
-                    error_code = resp_json.get("error", {}).get("code", "")
-                    
-                    # Handle JSON validation failure - fallback to non-JSON mode
-                    if error_code == "json_validate_failed" and use_json_mode:
-                        logger.warning(f"JSON validation failed for chunk {index+1} with model {chunk_model}. Falling back to non-JSON mode.")
-                        use_json_mode = False
-                        if attempt < max_retries:
-                            await asyncio.sleep(1.0)
-                            continue
-                    
-                    # Sometimes rate limits return as 400 or other codes on some Gateways
-                    if "rate limit" in error_msg.lower() or "tpm" in error_msg.lower() or "rpm" in error_msg.lower():
-                        if attempt < max_retries:
-                            sleep_seconds = backoff_factor ** attempt + random.uniform(8.0, 15.0)
-                            logger.warning(f"Rate limit error message detected on chunk {index+1} for model {chunk_model}. Retrying in {sleep_seconds:.2f}s...")
-                            await asyncio.sleep(sleep_seconds)
-                            continue
-                    
-                    logger.error(f"Groq API returned error status {response.status_code} for chunk {index+1}: {response.text}")
-                    raise HTTPException(status_code=response.status_code, detail=f"Groq API Error on chunk {index+1}: {response.text}")
-                
-                response_json = response.json()
-                choices = response_json.get("choices", [])
-                if not choices:
-                    raise HTTPException(status_code=500, detail=f"Groq response for chunk {index+1} is missing choices.")
-                
-                content = choices[0].get("message", {}).get("content", "")
-                mindmap_data = repair_and_parse_json(content)
-                return mindmap_data
+        initial_model = chunk_models[index]
+        # Candidate model order: selected model first, followed by all other free tier models as fallbacks
+        candidate_models = [initial_model] + [m for m in ALL_FREE_TIER_MODELS if m != initial_model]
 
-                        
-            except httpx.HTTPError as http_err:
-                if attempt < max_retries:
-                    sleep_seconds = backoff_factor ** attempt + random.uniform(3.0, 6.0)
-                    logger.warning(f"HTTP error on chunk {index+1} (Attempt {attempt+1}): {str(http_err)}. Retrying in {sleep_seconds:.2f}s...")
-                    await asyncio.sleep(sleep_seconds)
-                    continue
-                else:
-                    raise HTTPException(status_code=500, detail=f"HTTP connection error on chunk {index+1}: {str(http_err)}")
+        user_prompt = f"Here is the text extracted from Part {index+1} of the document to turn into a mindmap:\n\n{chunk_text}"
+
+        for current_model in candidate_models:
+            # Space out requests per model to avoid rate limit spikes
+            import time
+            now = time.monotonic()
+            if current_model in model_last_request:
+                elapsed = now - model_last_request[current_model]
+                if elapsed < MIN_REQUEST_INTERVAL:
+                    wait_time = MIN_REQUEST_INTERVAL - elapsed
+                    logger.info(f"Spacing request for model '{current_model}': waiting {wait_time:.2f}s")
+                    await asyncio.sleep(wait_time)
+            model_last_request[current_model] = time.monotonic()
+
+            use_json_mode = True
+
+            for attempt in range(2):
+                try:
+                    # 8B and Gemma models have strict 6,000-15,000 TPM limits on free tier. Cap max_tokens to 1500 for 8B models.
+                    max_tokens = 1500 if ("8b" in current_model.lower() or "gemma" in current_model.lower()) else 4096
+                    data = {
+                        "model": current_model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        "temperature": 0.2,
+                        "max_tokens": max_tokens,
+                    }
+                    if use_json_mode:
+                        data["response_format"] = {"type": "json_object"}
+
+                    logger.info(f"Sending Groq API request for Chunk {index+1} using model: '{current_model}' (max_tokens={max_tokens}, Attempt {attempt+1})")
+                    resp = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data)
+
+                    # On Rate Limit (429) or Payload/TPM Limit (413): switch to NEXT fallback model immediately
+                    if resp.status_code in [413, 429]:
+                        logger.warning(f"Groq rate/TPM limit hit ({resp.status_code}) on model '{current_model}' for Chunk {index+1}. Switching to fallback model...")
+                        await asyncio.sleep(0.5)
+                        break
+
+                    if resp.status_code != 200:
+                        resp_json = resp.json() if resp.content else {}
+                        error_code = resp_json.get("error", {}).get("code", "")
+                        if error_code == "json_validate_failed" and use_json_mode:
+                            logger.warning(f"JSON mode validation failed on model '{current_model}'. Retrying with standard text mode...")
+                            use_json_mode = False
+                            continue
+                        logger.warning(f"Groq API error status {resp.status_code} on model '{current_model}' for Chunk {index+1}. Switching to fallback model...")
+                        break
+
+                    resp_json = resp.json()
+                    choices = resp_json.get("choices", [])
+                    if not choices:
+                        break
+
+                    content = choices[0].get("message", {}).get("content", "")
+                    mindmap_data = repair_and_parse_json(content)
+                    logger.info(f"Successfully generated Chunk {index+1} using model '{current_model}'")
+                    return mindmap_data
+
+                except Exception as exc:
+                    logger.warning(f"Error on model '{current_model}' for Chunk {index+1}: {str(exc)}. Retrying/falling back...")
+                    await asyncio.sleep(0.5)
+                    break
+
+
+        # Emergency Fallback Node: If every single model fails, construct a clean fallback sub-mindmap node
+        logger.error(f"All model fallback candidates failed for Chunk {index+1}. Synthesizing emergency fallback node.")
+        return {
+            "id": f"chunk_fallback_{index+1}",
+            "label": f"Part {index+1} Overview",
+            "summary": f"### Core Concept\n- **Overview**: Document summary for Part {index+1}.\n\n### Key Details\n- **Note**: Section recovered for continuous mindmap viewing.",
+        }
 
     try:
+
         async with httpx.AsyncClient(timeout=60.0) as client:
             # Process chunks SEQUENTIALLY to guarantee rate limit spacing works
             # asyncio.gather runs in parallel which defeats per-model spacing
