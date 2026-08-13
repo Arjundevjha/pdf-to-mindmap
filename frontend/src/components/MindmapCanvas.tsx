@@ -1,4 +1,4 @@
-import { useMemo, useEffect } from 'react';
+import { useMemo, useEffect, useState, useRef } from 'react';
 import { 
   ReactFlow, 
   Background, 
@@ -9,6 +9,8 @@ import {
   Position
 } from '@xyflow/react';
 import type { Node, Edge } from '@xyflow/react';
+import dagre from '@dagrejs/dagre';
+import type { LayoutWorkerInput, LayoutWorkerOutput } from '../workers/layout.worker';
 import '@xyflow/react/dist/style.css';
 
 // Define hierarchical node interface from backend
@@ -19,15 +21,26 @@ export interface MindmapNode {
   children: MindmapNode[];
 }
 
+interface FlatCustomNodeData {
+  id: string;
+  label: string;
+  summary: string;
+  hasChildren: boolean;
+  isExpanded: boolean;
+  isSelected: boolean;
+  onSelect: () => void;
+  onToggleExpand: () => void;
+}
+
 // Define the custom node component
-function FlatCustomNode({ data }: { data: any }) {
+function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
   const isSelected = data.isSelected;
   const isRoot = data.id === 'root';
 
   return (
     <div 
-      className={`relative px-4 py-3 bg-white border text-left min-h-[64px] w-[220px] flex items-center justify-between select-none cursor-pointer
-        ${isSelected ? 'border-blue-500 ring-[1px] ring-blue-500' : 'border-slate-200 hover:border-slate-300'}
+      className={`relative px-4 py-3 bg-white border text-left min-h-[64px] w-[220px] flex items-center justify-between select-none cursor-pointer transition-colors duration-150
+        ${isSelected ? 'border-blue-500 ring-[1px] ring-blue-500 shadow-sm' : 'border-slate-200 hover:border-slate-300'}
       `}
       onClick={data.onSelect}
     >
@@ -56,7 +69,8 @@ function FlatCustomNode({ data }: { data: any }) {
             e.stopPropagation(); 
             data.onToggleExpand(); 
           }}
-          className="absolute right-2 top-1/2 -translate-y-1/2 w-5 h-5 border border-slate-200 text-slate-500 flex items-center justify-center bg-slate-50 hover:bg-slate-100 text-[10px] font-bold select-none cursor-pointer focus:outline-none"
+          className="absolute right-2 top-1/2 -translate-y-1/2 w-5 h-5 border border-slate-200 text-slate-500 flex items-center justify-center bg-slate-50 hover:bg-slate-100 text-[10px] font-bold select-none cursor-pointer focus:outline-none transition-colors"
+          aria-label={data.isExpanded ? 'Collapse node' : 'Expand node'}
         >
           {data.isExpanded ? '−' : '+'}
         </button>
@@ -86,6 +100,40 @@ interface MindmapCanvasProps {
   onSelectNode: (nodeId: string, label: string, summary: string) => void;
 }
 
+// Synchronous Dagre fallback if Web Worker is unavailable
+function runDagreLayoutSync(
+  rawNodes: Array<{ id: string }>, 
+  rawEdges: Array<{ id: string; source: string; target: string }>
+): Record<string, { x: number; y: number }> {
+  if (rawNodes.length === 0) return {};
+
+  const g = new dagre.graphlib.Graph();
+  g.setGraph({
+    rankdir: 'LR',
+    nodesep: 30,
+    ranksep: 80,
+    marginx: 40,
+    marginy: 40,
+    align: 'DL',
+  });
+  g.setDefaultEdgeLabel(() => ({}));
+
+  rawNodes.forEach((n) => g.setNode(n.id, { width: 220, height: 64 }));
+  rawEdges.forEach((e) => g.setEdge(e.source, e.target));
+
+  dagre.layout(g);
+
+  const positions: Record<string, { x: number; y: number }> = {};
+  rawNodes.forEach((n) => {
+    const dn = g.node(n.id);
+    if (dn) {
+      positions[n.id] = { x: dn.x - 110, y: dn.y - 32 };
+    }
+  });
+
+  return positions;
+}
+
 export function MindmapCanvas({ 
   mindmap, 
   expandedIds, 
@@ -98,110 +146,135 @@ export function MindmapCanvas({
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({});
+  const workerRef = useRef<Worker | null>(null);
 
-  // Calculate layout of visible nodes recursively
-  // Horizontal hierarchy: parent x=0, children x=300, grandchildren x=600...
-  const calculateLayout = useMemo(() => {
-    if (!mindmap) return { nodes: [], edges: [] };
+  // Initialize layout Web Worker
+  useEffect(() => {
+    try {
+      workerRef.current = new Worker(
+        new URL('../workers/layout.worker.ts', import.meta.url),
+        { type: 'module' }
+      );
+    } catch (err) {
+      console.warn('Web Worker initialization failed, using synchronous fallback:', err);
+      workerRef.current = null;
+    }
 
-    const resultNodes: Node[] = [];
-    const resultEdges: Edge[] = [];
+    return () => {
+      workerRef.current?.terminate();
+      workerRef.current = null;
+    };
+  }, []);
 
-    // Helper function to traverse and position nodes
-    function layoutTree(
-      node: MindmapNode,
-      x: number,
-      yStart: number,
-      depth: number
-    ): { height: number; midpointY: number } {
+  // Extract visible hierarchy nodes and edges based ONLY on mindmap and expandedIds
+  const { rawNodes, rawEdges } = useMemo(() => {
+    if (!mindmap) return { rawNodes: [], rawEdges: [] };
+
+    const nodeList: Array<{
+      id: string;
+      label: string;
+      summary: string;
+      hasChildren: boolean;
+      isExpanded: boolean;
+    }> = [];
+    const edgeList: Array<{ id: string; source: string; target: string }> = [];
+
+    function traverse(node: MindmapNode) {
       const isExpanded = expandedIds.has(node.id);
-      const hasChildren = node.children && node.children.length > 0;
-      
-      // Node Height standard unit is 110px vertical space band per leaf node
-      if (!isExpanded || !hasChildren) {
-        const y = yStart + 35; // centered in its 70px slot
-        resultNodes.push({
-          id: node.id,
-          type: 'custom',
-          position: { x, y },
-          data: {
-            id: node.id,
-            label: node.label,
-            summary: node.summary,
-            hasChildren: hasChildren,
-            isExpanded: false,
-            isSelected: node.id === selectedNodeId,
-            onSelect: () => onSelectNode(node.id, node.label, node.summary),
-            onToggleExpand: () => onToggleNodeExpand(node.id),
-          },
-        });
-        return { height: 80, midpointY: yStart + 32 };
+      const hasChildren = Boolean(node.children && node.children.length > 0);
+
+      nodeList.push({
+        id: node.id,
+        label: node.label,
+        summary: node.summary,
+        hasChildren,
+        isExpanded,
+      });
+
+      if (isExpanded && hasChildren) {
+        for (const child of node.children) {
+          edgeList.push({
+            id: `edge-${node.id}-${child.id}`,
+            source: node.id,
+            target: child.id,
+          });
+          traverse(child);
+        }
       }
+    }
 
-      // If expanded, recursively calculate positions for all visible children
-      let currentY = yStart;
-      const childMidpoints: number[] = [];
+    traverse(mindmap);
 
-      for (const child of node.children) {
-        const { height: childHeight, midpointY: childMidpoint } = layoutTree(
-          child,
-          x + 280, // Horizontal offset
-          currentY,
-          depth + 1
-        );
+    return { rawNodes: nodeList, rawEdges: edgeList };
+  }, [mindmap, expandedIds]);
 
-        resultEdges.push({
-          id: `edge-${node.id}-${child.id}`,
-          source: node.id,
-          target: child.id,
-          type: 'smoothstep',
-          style: { stroke: '#cbd5e1', strokeWidth: 1.5 },
-        });
+  // Dispatch layout calculation to Web Worker or fallback
+  useEffect(() => {
+    if (rawNodes.length === 0) {
+      setPositions({});
+      return;
+    }
 
-        childMidpoints.push(childMidpoint);
-        currentY += childHeight;
-      }
+    if (workerRef.current) {
+      const workerPayload: LayoutWorkerInput = {
+        nodes: rawNodes.map((n) => ({ id: n.id, width: 220, height: 64 })),
+        edges: rawEdges,
+        direction: 'LR',
+      };
 
-      const totalHeight = currentY - yStart;
-      const parentYMidpoint = childMidpoints.reduce((a, b) => a + b, 0) / childMidpoints.length;
-      
-      // Node is 64px high, midpoint is parentYMidpoint. Top Y is parentYMidpoint - 32
-      const parentNodeY = parentYMidpoint - 32;
+      workerRef.current.onmessage = (event: MessageEvent<LayoutWorkerOutput>) => {
+        setPositions(event.data.positions);
+      };
 
-      resultNodes.push({
+      workerRef.current.postMessage(workerPayload);
+    } else {
+      const animFrame = requestAnimationFrame(() => {
+        const syncPositions = runDagreLayoutSync(rawNodes, rawEdges);
+        setPositions(syncPositions);
+      });
+      return () => cancelAnimationFrame(animFrame);
+    }
+  }, [rawNodes, rawEdges]);
+
+  // Construct React Flow nodes and edges by combining layout positions with selection state
+  useEffect(() => {
+    if (rawNodes.length === 0) {
+      setNodes([]);
+      setEdges([]);
+      return;
+    }
+
+    const flowNodes: Node[] = rawNodes.map((node) => {
+      const pos = positions[node.id] || { x: 0, y: 0 };
+      return {
         id: node.id,
         type: 'custom',
-        position: { x, y: parentNodeY },
+        position: pos,
         data: {
           id: node.id,
           label: node.label,
           summary: node.summary,
-          hasChildren: true,
-          isExpanded: true,
+          hasChildren: node.hasChildren,
+          isExpanded: node.isExpanded,
           isSelected: node.id === selectedNodeId,
           onSelect: () => onSelectNode(node.id, node.label, node.summary),
           onToggleExpand: () => onToggleNodeExpand(node.id),
         },
-      });
+      };
+    });
 
-      return { height: totalHeight, midpointY: parentYMidpoint };
-    }
+    const flowEdges: Edge[] = rawEdges.map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      type: 'smoothstep',
+      style: { stroke: '#cbd5e1', strokeWidth: 1.5 },
+    }));
 
-    layoutTree(mindmap, 40, 40, 0);
-    return { nodes: resultNodes, edges: resultEdges };
-
-  }, [mindmap, expandedIds, selectedNodeId, onToggleNodeExpand, onSelectNode]);
-
-  // Synchronize computed layout with React Flow state
-  useEffect(() => {
-    if (calculateLayout.nodes.length > 0) {
-      setNodes(calculateLayout.nodes);
-      setEdges(calculateLayout.edges);
-    } else {
-      setNodes([]);
-      setEdges([]);
-    }
-  }, [calculateLayout, setNodes, setEdges]);
+    setNodes(flowNodes);
+    setEdges(flowEdges);
+  }, [rawNodes, rawEdges, positions, selectedNodeId, onSelectNode, onToggleNodeExpand, setNodes, setEdges]);
 
   if (!mindmap) {
     return (
