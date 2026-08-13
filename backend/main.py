@@ -357,10 +357,7 @@ CORE PRINCIPLES FOR HISTORY (ADHD-FRIENDLY & SCANNABLE):
 
     else:
         return base_prompt
-ch step making the next inevitable in retrospect, surprising in prospect."""
 
-    else:
-        return base_prompt
 
 @app.get("/api/health")
 def health_check():
