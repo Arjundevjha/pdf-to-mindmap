@@ -1,13 +1,15 @@
 import React, { useState, useRef } from 'react';
 import { Upload, AlertCircle, FileText, CheckCircle } from 'lucide-react';
 import { useToast } from './Toast';
+import type { MindmapNode } from './MindmapCanvas';
 
 const getSingleModelFriendlyName = (id: string) => {
   if (id.includes('llama-3.3-70b')) return 'Llama 3.3 70B';
-  if (id.includes('gpt-oss-120b')) return 'GPT-OSS 120B';
-  if (id.includes('llama-3.1-8b')) return 'Llama 3.1 8B';
-  if (id.includes('gpt-oss-20b')) return 'GPT-OSS 20B';
-  if (id.includes('llama-3.2-11b')) return 'Llama 3.2 11B';
+  if (id.includes('deepseek-r1')) return 'DeepSeek R1 70B';
+  if (id.includes('mixtral-8x7b')) return 'Mixtral 8x7B';
+  if (id.includes('gemma2-9b')) return 'Gemma 2 9B';
+  if (id.includes('llama3-70b')) return 'Llama 3 70B';
+  if (id.includes('llama3-8b')) return 'Llama 3 8B';
   return id;
 };
 
@@ -23,10 +25,11 @@ const getModelFriendlyName = (modelId: string | null) => {
 };
 
 interface UploadZoneProps {
-  onMindmapGenerated: (filename: string, data: any) => void;
+  onMindmapGenerated: (filename: string, data: MindmapNode) => void;
   selectedModel: string;
   selectedSubject: string;
 }
+
 
 export function UploadZone({ onMindmapGenerated, selectedModel, selectedSubject }: UploadZoneProps) {
   const toast = useToast();
@@ -163,9 +166,11 @@ export function UploadZone({ onMindmapGenerated, selectedModel, selectedSubject 
         setFileName('');
       }, 800);
 
-    } catch (err: any) {
-      showError(err.message || "An unexpected error occurred during processing.");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "An unexpected error occurred during processing.";
+      showError(msg);
     }
+
   };
 
   return (

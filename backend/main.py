@@ -379,66 +379,161 @@ async def enrich_mindmap_with_images(node: dict, max_images: int = 8, count: int
 
 # Subject-specific system prompts
 def get_system_prompt(subject: str) -> str:
-    base_prompt = (
-        "You are an expert educational designer specializing in cognitive accessibility, ADHD-friendly learning, and data visualization.\n"
-        "Your task is to analyze the provided text and structure it into a hierarchical mindmap representation.\n"
-        "To make this ADHD-friendly, scannable, and high-substance for research, you MUST adhere to the following rules:\n"
-        "1. Node Labels: Must be extremely scannable, flat summaries (maximum of 3 to 5 words per label).\n"
-        "2. Node Summaries (SCANNABLE BULLET FORMAT): The 'summary' field for each node MUST be a single, flat JSON string value (enclosed in double quotes). It must NOT be a nested JSON object or list. Use clean, scannable BULLET POINTS with bolded key terms/dates/entities instead of wall-of-text paragraphs, while ensuring ALL key points, mechanisms, data, and details from the text are thoroughly covered. It must follow this exact Markdown structure inside the string (using escaped newlines \\n):\n"
-        "   \"summary\": \"### Core Concept\\n- **Main Thesis**: [Deep 1-2 sentence core concept explanation]\\n- **Key Mechanism**: [Step-by-step or core process breakdown from text]\\n- **Significance**: [Why this matters in context]\\n\\n### Key Details\\n- **Key Term 1**: [Definition + significance from text]\\n- **Key Term 2**: [Definition + significance from text]\\n- **Core Components**: [Detailed breakdown from text]\\n\\n### Evidence & Case Studies\\n- **[Example Name]**: [Concrete case from text with data: place names, statistics, years, outcomes]\\n- **[Example Name]**: [Second case from text with different context/region]\\n\\n### Connection\\n- **Link to Context**: [1-2 sentences: How this links to parent, why it matters for the big picture]\\n\\n### Memory Hook\\n- **Visual Anchor**: [ONE vivid analogy, mnemonic, visual image, or 'aha!' insight from text]\")\n"
-        "   CRITICAL: Do NOT make 'summary' a JSON object or omit the double quotes around its value. Use scannable bullet points for ALL sections.\n"
-        "3. COVERAGE: Every distinct concept, stage, step, phase, component, argument, event, or case study in the source text MUST appear as a node. Do not summarize away content. Do not skip stages. Do not merge distinct ideas.\n"
-        "4. HIERARCHY: The tree structure must mirror the document's logical organization. If the text presents a cycle with 7 stages → 7 child nodes. If it presents 3 causes → 3 child nodes. If it presents a causal chain → chain structure.\n"
-        "5. SOURCE FIDELITY: Use ONLY information from the provided text. Do not add external knowledge. Do not invent examples not in the text.\n"
-        "6. Output format: Respond with a single valid JSON object containing no other text.\n\n"
-        "The JSON object must strictly conform to this recursive structure:\n"
-        "{\n"
-        "  \"id\": \"root\",\n"
-        "  \"label\": \"Central Topic\",\n"
-        "  \"summary\": \"### Core Concept\\n- **Main Thesis**: [Overall document thesis from text]\\n- **Scope**: [Key themes covered]\\n\\n### Key Details\\n- **Key Term**: [Definition + why it matters from text]\\n\\n### Evidence & Case Studies\\n- **[Example]**: [Concrete case from text with data]\\n\\n### Connection\\n- **Significance**: [Main scope and significance]\\n\\n### Memory Hook\\n- **Anchor**: [One vivid anchor for the entire topic]\",\n"
-        "  \"children\": [\n"
-        "    {\n"
-        "      \"id\": \"child-id-1\",\n"
-        "      \"label\": \"Subtopic Label\",\n"
-        "      \"summary\": \"### Core Concept\\n- **Core Process**: [Deep explanation with mechanism from text]\\n- **Context**: [Nuances and implications]\\n\\n### Key Details\\n- **Key Term**: [Definition + significance from text]\\n\\n### Evidence & Case Studies\\n- **[Example]**: [Concrete case from text with data]\\n\\n### Connection\\n- **Parent Link**: [Link to parent and big picture]\\n\\n### Memory Hook\\n- **Mnemonic**: [Vivid analogy or mnemonic]\",\n"
-        "      \"children\": []\n"
-        "    }\n"
-        "  ]\n"
-        "}\n"
-        "Ensure all children are formatted similarly, and nested hierarchies are created where logical.\n"
-        "JSON formatting safety guidelines:\n"
-        "- The 'summary' field MUST be a plain text string. Do NOT output it as an object with keys like '### Core Concept'.\n"
-        "- All text inside the 'summary' string must have its newlines escaped as \\n.\n"
-        "- Ensure the entire response is a single, valid JSON object matching the schema."
-    )
-    
-    if subject == "geography":
-        return base_prompt + """
+    if subject == "math":
+        return """You are a world-class Mathematics Professor and visual STEM curriculum architect.
+Your objective is to analyze the mathematical text and transform it into a crystal-clear, structured mindmap.
 
-SPECIALIZATION: GEOGRAPHY — Processes, Cycles, Systems & Spatial Patterns
+CRITICAL MATHEMATICAL RULES:
+1. LaTeX Standard: Every mathematical formula, variable, and expression MUST be formatted in standard LaTeX:
+   - Inline expressions: $x$, $\\theta$, $\\int_a^b f(x)dx$, $\\lim_{x \\to 0}$
+   - Block equations: $$f(x) = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$
+2. Plain-English Intuition: Never provide an equation without explaining what each variable means in plain English.
+3. 2D Function Plotting: Whenever a node discusses a plottable 2D mathematical function or curve (e.g., quadratic $x^2 - 4$, trigonometric $\\sin(x)$, exponential $e^x$, cubic $x^3 - 3x$, rational $1/x$), include a structured "graph" object with standard string expression in terms of 'x' and domain bounds.
+4. Equations Field: Include an "equations" array of top LaTeX formulas for that concept. If a concept has no formulas, omit the "equations" field or set to [].
+5. Summary Structure: The "summary" string MUST follow these clean sections (only include Equations and Graph sections if applicable):
+   ### Core Concept
+   - **Mathematical Thesis**: [High-clarity 1-2 sentence intuition of the theorem/principle]
+   - **Key Mechanism**: [Step-by-step mathematical logic or proof intuition]
 
-Geography IS concepts. Every model, cycle, process, theory, pattern, and relationship IS a concept. Dropping a concept = broken understanding.
+   ### Equations & Variables (omit if no equations)
+   - **Formula**: $$[Block LaTeX Formula]$$
+   - **Variable Definitions**: [Plain-English explanation of symbols: $x$, $y$, constants, domain]
 
-MANDATORY JSON STRUCTURE:
-- Use numbered stage child nodes for cycles/models.
-- Ensure summaries use scannable bullet points (- **Key Concept**: explanation) with bolded terms.
-- Cover all case studies, statistics, and place names from the text."""
+   ### Graph & Curve Behavior (omit if no graph)
+   - **Behavior**: [Key turning points, roots, intercepts, asymptotes, symmetry]
+
+   ### Physical Meaning & Application
+   - **Application**: [Real-world engineering, financial, or geometric application with concrete numbers]
+
+JSON OUTPUT SCHEMA:
+Output ONLY a single valid JSON object strictly matching this schema:
+{
+  "id": "root",
+  "label": "Topic Title (3-5 words)",
+  "equations": ["f(x) = ax^2 + bx + c", "x = \\\\frac{-b \\\\pm \\\\sqrt{b^2 - 4ac}}{2a}"],
+  "graph": {
+    "fn": "x^2 - 4",
+    "domain": [-4, 4],
+    "xLabel": "x",
+    "yLabel": "f(x)",
+    "title": "Parabola f(x) = x^2 - 4"
+  },
+  "summary": "### Core Concept\\n- **Mathematical Thesis**: [Explanation]\\n\\n### Equations & Variables\\n- **Formula**: $$f(x) = x^2 - 4$$\\n- **Variables**: $x$ represents input domain.\\n\\n### Graph & Curve Behavior\\n- **Roots**: $x = \\\\pm 2$\\n\\n### Physical Meaning & Application\\n- **Application**: Parabolic trajectories in physics.",
+  "children": [
+    {
+      "id": "child-1",
+      "label": "Sub-concept Title",
+      "equations": ["y = mx + c"],
+      "graph": { "fn": "2*x + 1", "domain": [-5, 5], "xLabel": "x", "yLabel": "y", "title": "Linear Slope" },
+      "summary": "### Core Concept\\n- **Mathematical Thesis**: Rate of change.\\n\\n### Physical Meaning & Application\\n- **Application**: Constant velocity modeling.",
+      "children": []
+    }
+  ]
+}"""
+
+    elif subject == "physics":
+        return """You are an elite Physics Educator and STEM visualization architect.
+Your objective is to analyze the physics text and convert it into a rigorous, intuitive mindmap.
+
+CRITICAL PHYSICS RULES:
+1. LaTeX Equations with SI Units: Every physical law, kinematics equation, or field formula MUST use standard LaTeX ($inline$ and $$block$$) accompanied by SI units (e.g., $m/s^2$, $N$, $J$, $W$, $V$, $\\Omega$).
+2. Plain-English Intuition: Connect every equation to physical reality (cause, effect, conservation laws).
+3. Physics Curves & Dynamics: Whenever a node discusses a physical curve (e.g. projectile trajectory $-0.5*9.8*x^2 + 20*x$, harmonic oscillation $\\sin(x)$, exponential decay $\\exp(-x)$, velocity-time curves), provide a "graph" object with standard expression in 'x' and domain.
+4. Equations Field: Include an "equations" array containing top LaTeX formulas for the concept. If purely conceptual without formulas, omit or set to [].
+5. Summary Structure: The "summary" string MUST follow these clean sections (only include Equations and Graph sections if applicable):
+   ### Core Concept
+   - **Physical Principle**: [1-2 sentence intuition of the law or physical mechanism]
+   - **Underlying Mechanism**: [Force interaction, energy transfer, or molecular process]
+
+   ### Equations & Variables (omit if no equations)
+   - **Governing Law**: $$[Block LaTeX Formula]$$
+   - **Variable Definitions & Units**: [Variables, constants (e.g., $g=9.81 m/s^2$), and SI units]
+
+   ### Graph & Curve Behavior (omit if no graph)
+   - **Curve Dynamics**: [Physical meaning of gradient, area under curve, peak values, oscillations]
+
+   ### Physical Meaning & Application
+   - **Experimental Setup & Application**: [Real-world engineering, laboratory setup, or everyday physical phenomenon with concrete values]
+
+JSON OUTPUT SCHEMA:
+Output ONLY a single valid JSON object matching this schema:
+{
+  "id": "root",
+  "label": "Physics Concept (3-5 words)",
+  "equations": ["F = m a", "v = u + a t"],
+  "graph": {
+    "fn": "-0.5 * 9.81 * x^2 + 20 * x",
+    "domain": [0, 4.2],
+    "xLabel": "Time t (s)",
+    "yLabel": "Height y (m)",
+    "title": "Projectile Trajectory"
+  },
+  "summary": "### Core Concept\\n- **Physical Principle**: [Intuition]\\n\\n### Equations & Variables\\n- **Governing Law**: $$F = m a$$\\n- **Variables**: $m$ (mass, kg), $a$ (acceleration, $m/s^2$).\\n\\n### Physical Meaning & Application\\n- **Application**: Rocket propulsion and collision safety.",
+  "children": []
+}"""
 
     elif subject == "history":
-        return base_prompt + """
+        return """You are an expert historian and educational mindmap designer.
+Your objective is to analyze historical text and map out causal backbones, actor rationale, and ripple effects.
 
-SPECIALIZATION: HISTORY — Causal Chains, Rationale, Interconnected Narrative
+RULES FOR HISTORY:
+1. SCANNABLE FORMAT: Use structured bullet points (- **Year/Event/Decision**: Rationale and consequence).
+2. CAUSAL LOGIC: Organize hierarchy chronologically and causally (Root Cause → Trigger → Event → Immediate Outcome → Long-term Impact).
+3. RATIONALE & ACTORS: Highlight strategic motivations and ideological drivers.
+4. SUMMARY STRUCTURE:
+   ### Core Concept
+   - **Historical Thesis**: [Core historical takeaway and context]
+   - **Causal Driver**: [Why and how key events unfolded]
 
-History is understanding HOW one thing leads to another — the reasoning behind actions, decisions, and ripple effects.
+   ### Key Details & Turning Points
+   - **Key Turning Point**: [Year/Date + decisive event + outcome]
+   - **Actors & Factions**: [Motivations and policies]
 
-CORE PRINCIPLES FOR HISTORY (ADHD-FRIENDLY & SCANNABLE):
-1. SCANNABLE BULLETS OVER PARAGRAPHS: Do NOT write long paragraphs. Structure all narrative explanations into scannable bullet points (- **Year/Event/Decision**: Rationale and consequences).
-2. CAUSAL BACKBONE: Hierarchy follows causality (Root Cause → Trigger → Event → Consequence → Next Trigger).
-3. RATIONALE IS NON-NEGOTIABLE: Explain actor reasoning clearly in bite-sized bullet points (- **Actor Rationale**: Strategic/ideological reason).
-4. COMPLETE COVERAGE: Include ALL key dates, treaties, figures, and outcomes from the text without omitting critical details."""
+   ### Physical Meaning & Application
+   - **Historical Significance**: [Long-term legacy and modern relevance]
+
+JSON OUTPUT SCHEMA: Output ONLY a single valid JSON object (with "id", "label", "summary", "children")."""
+
+    elif subject == "geography":
+        return """You are an expert physical and human geography curriculum architect.
+Your objective is to analyze geographical text and map out physical processes, spatial patterns, cycles, and systems.
+
+RULES FOR GEOGRAPHY:
+1. PROCESS & CYCLES: Structure sequential cycles and stages using numbered child nodes.
+2. SPATIAL DYNAMICS: Highlight spatial distribution, climatic zones, plate boundaries, and human interactions.
+3. SUMMARY STRUCTURE:
+   ### Core Concept
+   - **Geographical Thesis**: [Core process or environmental system]
+   - **Key Mechanism**: [Step-by-step physical or spatial breakdown]
+
+   ### Key Details
+   - **Spatial Pattern / Factors**: [Distribution, landforms, climatic drivers]
+   - **Case Study**: [Specific geographical location with empirical data]
+
+   ### Physical Meaning & Application
+   - **Significance**: [Environmental impact, resource management, hazard mitigation]
+
+JSON OUTPUT SCHEMA: Output ONLY a single valid JSON object (with "id", "label", "summary", "children")."""
 
     else:
-        return base_prompt
+        return """You are an expert educational curriculum architect.
+Your objective is to analyze the document and construct a hierarchical, ADHD-friendly, scannable mindmap.
+
+RULES:
+1. Node Labels: 3-5 word concise summaries.
+2. Scannable Bullet Format:
+   ### Core Concept
+   - **Main Thesis**: [1-2 sentence core intuition]
+   - **Key Mechanism**: [Step-by-step breakdown]
+
+   ### Key Details
+   - **Key Term / Data**: [Definitions, facts, figures from text]
+
+   ### Physical Meaning & Application
+   - **Significance & Application**: [Practical takeaway and broader context]
+
+JSON OUTPUT SCHEMA: Output ONLY a single valid JSON object (with "id", "label", "summary", "children")."""
+
 
 
 @app.get("/api/health")
@@ -649,15 +744,16 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
         "meta-llama/llama-4-scout-17b-16e-instruct": "llama-3.3-70b-versatile",
         "qwen/qwen3.6-27b": "llama-3.3-70b-versatile",
         "qwen/qwen3-32b": "llama-3.3-70b-versatile",
-        "openai/gpt-oss-20b": "llama-3.1-8b-instant",
+        "openai/gpt-oss-20b": "llama3-8b-8192",
         "openai/gpt-oss-120b": "llama-3.3-70b-versatile",
-        "llama-3.2-11b-vision-preview": "llama-3.1-8b-instant",
+        "llama-3.2-11b-vision-preview": "llama3-8b-8192",
+        "llama-3.1-8b-instant": "llama-3.3-70b-versatile",
     }
     selected_model = MODEL_ALIASES.get(raw_model, raw_model)
     word_count = len(payload.text.split())
     
     # Adjust chunk size to 8,000 - 12,000 characters so completions stay safely within token limits
-    if selected_model in ["llama-3.1-8b-instant", "auto-smart-routing"] or len(payload.text) > 24000:
+    if selected_model in ["llama3-8b-8192", "auto-smart-routing"] or len(payload.text) > 24000:
         chunk_size = 8000
     else:
         chunk_size = 12000
@@ -673,10 +769,9 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
     
     ALL_FREE_TIER_MODELS = [
         "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
         "deepseek-r1-distill-llama-70b",
-        "gemma2-9b-it",
         "mixtral-8x7b-32768",
+        "gemma2-9b-it",
         "llama3-70b-8192",
         "llama3-8b-8192",
     ]
@@ -686,7 +781,8 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
     
     if selected_model == "auto-smart-routing":
         is_routed = True
-        primary_model = "llama-3.3-70b-versatile" if word_count >= 1500 else "llama-3.1-8b-instant"
+        primary_model = "llama-3.3-70b-versatile" if word_count >= 1200 else "mixtral-8x7b-32768"
+
 
     # Distribute initial models across all available free tier models if routed, or use primary model
     chunk_models = []

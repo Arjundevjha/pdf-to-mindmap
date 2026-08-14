@@ -11,6 +11,8 @@ import {
 import type { Node, Edge } from '@xyflow/react';
 import dagre from '@dagrejs/dagre';
 import type { LayoutWorkerInput, LayoutWorkerOutput } from '../workers/layout.worker';
+import { FunctionPlotter, type GraphData } from './FunctionPlotter';
+import { KaTeXEquation } from './MathRenderer';
 import '@xyflow/react/dist/style.css';
 
 // Define hierarchical node interface from backend
@@ -18,6 +20,8 @@ export interface MindmapNode {
   id: string;
   label: string;
   summary: string;
+  equations?: string[];
+  graph?: GraphData;
   imageUrl?: string;
   imageCaption?: string;
   imageAspectRatio?: number;
@@ -28,6 +32,8 @@ interface FlatCustomNodeData {
   id: string;
   label: string;
   summary: string;
+  equations?: string[];
+  graph?: GraphData;
   imageUrl?: string;
   imageCaption?: string;
   hasChildren: boolean;
@@ -37,16 +43,27 @@ interface FlatCustomNodeData {
   onToggleExpand: () => void;
 }
 
-// Define the custom node component with adaptive image frame
+// Custom node component supporting LaTeX previews, 2D Function plots, and Wikimedia images
 function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
   const isSelected = data.isSelected;
   const isRoot = data.id === 'root';
   const hasImage = Boolean(data.imageUrl);
+  const hasGraph = Boolean(data.graph && data.graph.fn);
+  const hasEquations = Boolean(data.equations && data.equations.length > 0);
+
+  // Dynamic card layout dimensions
+  let cardWidth = 'w-[240px]';
+  if (hasGraph || hasImage) {
+    cardWidth = 'w-[270px]';
+  } else if (hasEquations) {
+    cardWidth = 'w-[260px]';
+  }
 
   return (
     <div 
       className={`relative bg-white border text-left flex flex-col select-none cursor-pointer transition-all duration-150 rounded-md
-        ${hasImage ? 'w-[270px] p-3' : 'w-[240px] px-4 py-3 min-h-[64px] justify-between'}
+        ${cardWidth}
+        ${hasGraph || hasImage ? 'p-3' : hasEquations ? 'p-3 min-h-[84px]' : 'px-4 py-3 min-h-[64px] justify-between'}
         ${isSelected ? 'border-blue-500 ring-[1px] ring-blue-500 shadow-md' : 'border-slate-200 hover:border-slate-300 shadow-sm'}
       `}
       onClick={data.onSelect}
@@ -64,8 +81,15 @@ function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
         }} 
       />
       
-      {/* Wikimedia Educational Image Card */}
-      {hasImage && (
+      {/* 1. Dynamic 2D Mathematical & Physics Curve Thumbnail */}
+      {hasGraph && data.graph && (
+        <div className="mb-2.5 w-full overflow-hidden">
+          <FunctionPlotter graph={data.graph} isThumbnail={true} />
+        </div>
+      )}
+
+      {/* 2. Wikimedia Educational Image Card (if no graph) */}
+      {!hasGraph && hasImage && (
         <div className="mb-2.5 w-full bg-slate-100 rounded border border-slate-100 overflow-hidden flex flex-col items-center justify-center">
           <img 
             src={data.imageUrl} 
@@ -73,7 +97,6 @@ function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
             className="w-full max-h-[140px] object-cover rounded-t transition-opacity duration-200"
             loading="lazy"
             onError={(e) => {
-              // Hide image container on broken URL load
               (e.target as HTMLElement).parentElement?.classList.add('hidden');
             }}
           />
@@ -87,6 +110,14 @@ function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
         </div>
       )}
 
+      {/* 3. Primary Equation Preview Badge */}
+      {hasEquations && data.equations && data.equations[0] && (
+        <div className="mb-2 px-2 py-1 bg-slate-50 border border-slate-100 rounded flex items-center justify-center overflow-x-auto">
+          <KaTeXEquation formula={data.equations[0]} displayMode={false} className="text-xs text-slate-800" />
+        </div>
+      )}
+
+      {/* Node Title & Expand Button */}
       <div className="flex items-center justify-between flex-1">
         <div className="flex-1 pr-6 py-0.5">
           <span className="text-slate-700 text-xs font-semibold leading-normal font-sans block truncate-2-lines select-none">
@@ -129,7 +160,7 @@ interface MindmapCanvasProps {
   expandedIds: Set<string>;
   selectedNodeId: string | null;
   onToggleNodeExpand: (nodeId: string) => void;
-  onSelectNode: (nodeId: string, label: string, summary: string) => void;
+  onSelectNode: (node: MindmapNode) => void;
 }
 
 // Synchronous Dagre fallback if Web Worker is unavailable
@@ -142,8 +173,8 @@ function runDagreLayoutSync(
   const g = new dagre.graphlib.Graph();
   g.setGraph({
     rankdir: 'LR',
-    nodesep: 30,
-    ranksep: 80,
+    nodesep: 35,
+    ranksep: 90,
     marginx: 40,
     marginy: 40,
     align: 'DL',
@@ -200,13 +231,15 @@ export function MindmapCanvas({
   }, []);
 
   // Extract visible hierarchy nodes and edges based ONLY on mindmap and expandedIds
-  const { rawNodes, rawEdges } = useMemo(() => {
-    if (!mindmap) return { rawNodes: [], rawEdges: [] };
+  const { rawNodes, rawEdges, nodeMap } = useMemo(() => {
+    if (!mindmap) return { rawNodes: [], rawEdges: [], nodeMap: new Map<string, MindmapNode>() };
 
     const nodeList: Array<{
       id: string;
       label: string;
       summary: string;
+      equations?: string[];
+      graph?: GraphData;
       imageUrl?: string;
       imageCaption?: string;
       hasChildren: boolean;
@@ -215,19 +248,33 @@ export function MindmapCanvas({
       height: number;
     }> = [];
     const edgeList: Array<{ id: string; source: string; target: string }> = [];
+    const nMap = new Map<string, MindmapNode>();
 
     function traverse(node: MindmapNode) {
+      nMap.set(node.id, node);
       const isExpanded = expandedIds.has(node.id);
       const hasChildren = Boolean(node.children && node.children.length > 0);
       const hasImage = Boolean(node.imageUrl);
+      const hasGraph = Boolean(node.graph && node.graph.fn);
+      const hasEquations = Boolean(node.equations && node.equations.length > 0);
 
-      const width = hasImage ? 270 : 240;
-      const height = hasImage ? 210 : 64;
+      // Compute dynamic bounding box for Dagre layout engine
+      let width = 240;
+      let height = 64;
+      if (hasGraph || hasImage) {
+        width = 270;
+        height = 210;
+      } else if (hasEquations) {
+        width = 260;
+        height = 96;
+      }
 
       nodeList.push({
         id: node.id,
         label: node.label,
         summary: node.summary,
+        equations: node.equations,
+        graph: node.graph,
         imageUrl: node.imageUrl,
         imageCaption: node.imageCaption,
         hasChildren,
@@ -250,7 +297,7 @@ export function MindmapCanvas({
 
     traverse(mindmap);
 
-    return { rawNodes: nodeList, rawEdges: edgeList };
+    return { rawNodes: nodeList, rawEdges: edgeList, nodeMap: nMap };
   }, [mindmap, expandedIds]);
 
   // Dispatch layout calculation to Web Worker or fallback
@@ -259,7 +306,6 @@ export function MindmapCanvas({
       const animFrame = requestAnimationFrame(() => setPositions({}));
       return () => cancelAnimationFrame(animFrame);
     }
-
 
     if (workerRef.current) {
       const workerPayload: LayoutWorkerInput = {
@@ -292,6 +338,17 @@ export function MindmapCanvas({
 
     const flowNodes: Node[] = rawNodes.map((node) => {
       const pos = positions[node.id] || { x: 0, y: 0 };
+      const originalNode = nodeMap.get(node.id) || {
+        id: node.id,
+        label: node.label,
+        summary: node.summary,
+        equations: node.equations,
+        graph: node.graph,
+        imageUrl: node.imageUrl,
+        imageCaption: node.imageCaption,
+        children: [],
+      };
+
       return {
         id: node.id,
         type: 'custom',
@@ -300,12 +357,14 @@ export function MindmapCanvas({
           id: node.id,
           label: node.label,
           summary: node.summary,
+          equations: node.equations,
+          graph: node.graph,
           imageUrl: node.imageUrl,
           imageCaption: node.imageCaption,
           hasChildren: node.hasChildren,
           isExpanded: node.isExpanded,
           isSelected: node.id === selectedNodeId,
-          onSelect: () => onSelectNode(node.id, node.label, node.summary),
+          onSelect: () => onSelectNode(originalNode),
           onToggleExpand: () => onToggleNodeExpand(node.id),
         },
       };
@@ -321,7 +380,7 @@ export function MindmapCanvas({
 
     setNodes(flowNodes);
     setEdges(flowEdges);
-  }, [rawNodes, rawEdges, positions, selectedNodeId, onSelectNode, onToggleNodeExpand, setNodes, setEdges]);
+  }, [rawNodes, rawEdges, positions, selectedNodeId, nodeMap, onSelectNode, onToggleNodeExpand, setNodes, setEdges]);
 
   if (!mindmap) {
     return (

@@ -1,21 +1,24 @@
 import { useState, useEffect } from 'react';
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { UploadZone } from './components/UploadZone';
-import { MindmapCanvas } from './components/MindmapCanvas';
-import type { MindmapNode } from './components/MindmapCanvas';
+import { MindmapCanvas, type MindmapNode } from './components/MindmapCanvas';
+import { MathRenderer, KaTeXEquation } from './components/MathRenderer';
+import { FunctionPlotter } from './components/FunctionPlotter';
 import { useToast } from './components/Toast';
 import { 
-  Undo2, 
   Maximize2, 
   Minimize2, 
-  BookOpen, 
   Trash2, 
-  X,
-  Cpu,
-  RotateCcw
+  RotateCcw, 
+  X, 
+  BookOpen, 
+  Cpu, 
+  Undo2,
+  Calculator
 } from 'lucide-react';
 
-interface DocumentItem {
+// Document storage model
+export interface SavedDocument {
   id: string;
   name: string;
   data: MindmapNode;
@@ -103,8 +106,8 @@ export default function App() {
     };
   }, [supabase]);
 
-  // Load initial states from localStorage
-  const [documents, setDocuments] = useState<DocumentItem[]>(() => {
+  // Documents state - loaded from REST API or local storage
+  const [documents, setDocuments] = useState<SavedDocument[]>(() => {
     const saved = localStorage.getItem('pdf_mindmaps_docs');
     return saved ? JSON.parse(saved) : [];
   });
@@ -113,19 +116,15 @@ export default function App() {
     return localStorage.getItem('pdf_mindmaps_active_id') || null;
   });
 
+  const [selectedNode, setSelectedNode] = useState<MindmapNode | null>(null);
+
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => {
     const saved = localStorage.getItem('pdf_mindmaps_expanded');
-    // Default to just the root node if nothing is saved
     return saved ? new Set(JSON.parse(saved)) : new Set(['root']);
   });
 
-  const [selectedNode, setSelectedNode] = useState<{
-    id: string;
-    label: string;
-    summary: string;
-  } | null>(null);
-
   const [isFocusMode, setIsFocusMode] = useState<boolean>(() => {
+
     return localStorage.getItem('pdf_mindmaps_focus_mode') === 'true';
   });
 
@@ -134,19 +133,21 @@ export default function App() {
     const validModels = [
       'auto-smart-routing',
       'llama-3.3-70b-versatile',
-      'openai/gpt-oss-120b',
-      'llama-3.1-8b-instant',
-      'openai/gpt-oss-20b',
-      'llama-3.2-11b-vision-preview'
+      'deepseek-r1-distill-llama-70b',
+      'mixtral-8x7b-32768',
+      'gemma2-9b-it',
+      'llama3-70b-8192',
+      'llama3-8b-8192'
     ];
     return (saved && validModels.includes(saved)) ? saved : 'auto-smart-routing';
   });
 
   const [selectedSubject, setSelectedSubject] = useState<string>(() => {
     const saved = localStorage.getItem('pdf_mindmaps_subject');
-    const validSubjects = ['general', 'geography', 'history'];
+    const validSubjects = ['general', 'math', 'physics', 'geography', 'history'];
     return (saved && validSubjects.includes(saved)) ? saved : 'general';
   });
+
 
   // Undo history stack for expanded node states
   const [undoHistory, setUndoHistory] = useState<string[][]>([]);
@@ -218,71 +219,107 @@ export default function App() {
     setAuthError('');
     setAuthSuccessMessage('');
     setAuthLoading(true);
-    
-    try {
-      if (!supabase) {
-        throw new Error('Authentication client is initializing. Please try again in a moment.');
-      }
 
-      if (authMode === 'forgot_password') {
-        const redirectTo = `${window.location.origin}/reset-password`;
-        const { error } = await supabase.auth.resetPasswordForEmail(authEmail, {
-          redirectTo,
+    const email = authEmail.trim().toLowerCase();
+
+    try {
+      if (authMode === 'signin') {
+        const response = await fetch(`${API_BASE}/auth/signin`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password: authPassword }),
         });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || 'Invalid email or password.');
+        }
         
-        if (error) throw error;
+        setCurrentUserEmail(email);
+        localStorage.setItem('pdf_mindmaps_user', email);
+        toast.success(`Welcome back, ${email}!`);
         
-        setAuthSuccessMessage('If the email is registered, a password reset link has been sent.');
+        if (supabase) {
+          supabase.auth.signInWithPassword({ email, password: authPassword }).catch(() => {});
+        }
+
         setAuthEmail('');
+        setAuthPassword('');
+      } else if (authMode === 'signup') {
+        if (authPassword !== authConfirmPassword) {
+          throw new Error('Passwords do not match.');
+        }
+
+        const response = await fetch(`${API_BASE}/auth/signup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password: authPassword }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || 'Sign up failed.');
+        }
+
+        if (supabase) {
+          supabase.auth.signUp({ email, password: authPassword }).catch(() => {});
+        }
+
+        setAuthSuccessMessage('Account created successfully! Please sign in.');
+        setAuthMode('signin');
+        setAuthPassword('');
+        setAuthConfirmPassword('');
+        toast.success('Account created successfully!');
+      } else if (authMode === 'forgot_password') {
+        const response = await fetch(`${API_BASE}/auth/forgot-password`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || 'Failed to send reset email.');
+        }
+
+        if (supabase) {
+          supabase.auth.resetPasswordForEmail(email, {
+            redirectTo: `${window.location.origin}/reset-password`,
+          }).catch(() => {});
+        }
+
+        setAuthSuccessMessage('If the email is registered, password reset instructions have been sent.');
+        toast.info('Password reset instructions sent.');
       } else if (authMode === 'reset_password') {
         if (authPassword !== authConfirmPassword) {
           throw new Error('Passwords do not match.');
         }
-        
-        const { error } = await supabase.auth.updateUser({
-          password: authPassword,
+
+        const response = await fetch(`${API_BASE}/auth/reset-password`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, newPassword: authPassword }),
         });
-        
-        if (error) throw error;
-        
-        setAuthSuccessMessage('Your password has been reset successfully.');
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || 'Failed to reset password.');
+        }
+
+        if (supabase) {
+          supabase.auth.updateUser({ password: authPassword }).catch(() => {});
+        }
+
+        setAuthSuccessMessage('Password reset successfully! Please sign in with your new password.');
+        setAuthMode('signin');
         setAuthPassword('');
         setAuthConfirmPassword('');
-        
-        // Auto-redirect to signin after 3 seconds
-        setTimeout(() => {
-          setAuthMode('signin');
-          setAuthSuccessMessage('');
-        }, 3000);
-      } else if (authMode === 'signin' || authMode === 'signup') {
-        const email = authEmail.trim().toLowerCase();
-        if (!email) {
-          throw new Error('Please enter a valid email address.');
-        }
-
-        // Set user immediately for instant access (no email verification requirement, no grey screen delay)
-        setCurrentUserEmail(email);
-        localStorage.setItem('pdf_mindmaps_user', email);
-        toast.success(`Logged in as ${email}`);
-
-        // Try Supabase auth in background if client is ready (non-blocking)
-        if (supabase) {
-          if (authMode === 'signin') {
-            supabase.auth.signInWithPassword({ email, password: authPassword }).catch(() => {});
-          } else {
-            supabase.auth.signUp({ email, password: authPassword }).catch(() => {});
-          }
-        }
-
-        setAuthEmail('');
-        setAuthPassword('');
+        toast.success('Password updated successfully!');
       }
-    } catch (err: any) {
-      setAuthError(err.message || 'An error occurred during authentication.');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'An error occurred during authentication.';
+      setAuthError(msg);
     } finally {
       setAuthLoading(false);
     }
   };
+
 
   // Handle Sign Out
   const handleSignOut = async () => {
@@ -296,14 +333,15 @@ export default function App() {
   };
 
   // Handle new mindmap generation
-  const handleMindmapGenerated = async (filename: string, mindmapData: any) => {
+  const handleMindmapGenerated = async (filename: string, mindmapData: MindmapNode) => {
     const newDocId = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString();
-    const newDoc: DocumentItem = {
+    const newDoc: SavedDocument = {
       id: newDocId,
       name: filename,
       data: mindmapData,
       userEmail: currentUserEmail || undefined
     };
+
 
     // Update local state for instant user feedback
     setDocuments(prev => [newDoc, ...prev]);
@@ -447,9 +485,10 @@ export default function App() {
   };
 
   // Select node to show details panel
-  const handleSelectNode = (id: string, label: string, summary: string) => {
-    setSelectedNode({ id, label, summary });
+  const handleSelectNode = (node: MindmapNode) => {
+    setSelectedNode(node);
   };
+
 
   // If not authenticated, render Login / Signup card
   if (!currentUserEmail) {
@@ -648,15 +687,13 @@ export default function App() {
                 <option value="deepseek-r1-distill-llama-70b">DeepSeek R1 Distill 70B (Reasoning)</option>
                 <option value="llama3-70b-8192">Llama 3 70B (Standard 70B)</option>
               </optgroup>
-              <optgroup label="8B - 9B Models (Fast & Efficient)">
-                <option value="llama-3.1-8b-instant">Llama 3.1 8B Instant (Fastest - 128k Context)</option>
-                <option value="gemma2-9b-it">Gemma 2 9B IT (Google Gemma)</option>
+              <optgroup label="MoE & Compact Models (Fast & Resilient)">
                 <option value="mixtral-8x7b-32768">Mixtral 8x7B (32k MoE)</option>
+                <option value="gemma2-9b-it">Gemma 2 9B IT (Google Gemma)</option>
                 <option value="llama3-8b-8192">Llama 3 8B (Standard 8B)</option>
               </optgroup>
             </select>
           </div>
-
 
           <div className="mb-4">
             <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5 flex items-center gap-1">
@@ -669,6 +706,8 @@ export default function App() {
               className="w-full text-xs bg-slate-50 border border-slate-200 text-slate-700 px-2.5 py-1.5 focus:outline-none focus:border-slate-300 font-medium select-none cursor-pointer rounded-none"
             >
               <option value="general">General (Auto-detect)</option>
+              <option value="math">Mathematics (Formulas, Proofs, 2D Plots)</option>
+              <option value="physics">Physics (Physical Laws, Variables, Curves)</option>
               <option value="geography">Geography (Processes, Cycles, Diagrams)</option>
               <option value="history">History (Timelines, Causality, Rationale)</option>
             </select>
@@ -796,7 +835,7 @@ export default function App() {
         {/* SIDE PANEL: Slide-out detailed summary */}
         <div 
           className={`absolute top-0 right-0 h-full bg-white border-l border-slate-200 shadow-xl transition-all duration-300 z-[1000] flex flex-col overflow-hidden
-            ${selectedNode ? 'w-[360px]' : 'w-0 border-l-0'}
+            ${selectedNode ? 'w-[380px]' : 'w-0 border-l-0'}
           `}
         >
           {selectedNode && (
@@ -815,13 +854,68 @@ export default function App() {
               </div>
 
               {/* Content */}
-              <div className="flex-1 overflow-y-auto p-5">
-                <h3 className="text-base font-bold text-slate-800 leading-snug mb-3 font-sans">
-                  {selectedNode.label}
-                </h3>
-                <div className="h-[1px] bg-slate-100 w-12 mb-4"></div>
-                <div className="space-y-3">
-                  {parseSummaryText(selectedNode.summary)}
+              <div className="flex-1 overflow-y-auto p-5 space-y-4">
+                <div>
+                  <h3 className="text-base font-bold text-slate-800 leading-snug mb-1.5 font-sans">
+                    {selectedNode.label}
+                  </h3>
+                  <div className="h-[2px] bg-slate-100 w-10"></div>
+                </div>
+
+                {/* 1. Dynamic Interactive 2D Function Plotter */}
+                {selectedNode.graph && selectedNode.graph.fn && (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-1.5 text-slate-500">
+                      <Calculator className="w-3.5 h-3.5 text-blue-500" />
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                        Interactive Curve & Behavior
+                      </span>
+                    </div>
+                    <FunctionPlotter graph={selectedNode.graph} isThumbnail={false} />
+                  </div>
+                )}
+
+                {/* 2. Featured LaTeX Equations & Variables */}
+                {selectedNode.equations && selectedNode.equations.length > 0 && (
+                  <div className="space-y-2">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                      Key Mathematical Formulations
+                    </span>
+                    <div className="space-y-1.5">
+                      {selectedNode.equations.map((eq, i) => (
+                        <div key={i} className="p-3 bg-slate-50 border border-slate-100 rounded-md overflow-x-auto">
+                          <KaTeXEquation formula={eq} displayMode={true} className="text-sm text-slate-800" />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 3. Educational Image */}
+                {selectedNode.imageUrl && (
+                  <div className="w-full bg-slate-100 rounded-md border border-slate-100 overflow-hidden">
+                    <img 
+                      src={selectedNode.imageUrl} 
+                      alt={selectedNode.imageCaption || selectedNode.label}
+                      className="w-full max-h-[180px] object-cover"
+                      loading="lazy"
+                    />
+                    {selectedNode.imageCaption && (
+                      <div className="p-2 bg-slate-50 border-t border-slate-100">
+                        <span className="text-[10px] text-slate-500 font-sans block italic">
+                          {selectedNode.imageCaption}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* 4. Structured KaTeX & Markdown Summary */}
+                <div className="space-y-2 pt-1 border-t border-slate-100">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                    Concept Breakdown
+                  </span>
+                  <MathRenderer content={selectedNode.summary} />
                 </div>
               </div>
             </>
@@ -833,44 +927,3 @@ export default function App() {
   );
 }
 
-// Markdown parser helper for structured ADHD-friendly summaries
-function parseSummaryText(text: string) {
-  if (!text) return null;
-  const lines = text.split('\n');
-  return lines.map((line, idx) => {
-    // Headings: ### Title
-    if (line.startsWith('### ')) {
-      return (
-        <h4 key={idx} className="font-bold text-xs text-slate-400 uppercase tracking-wider mt-4 mb-2 first:mt-0 font-sans">
-          {line.replace('### ', '')}
-        </h4>
-      );
-    }
-    // Bullet points: - Item or * Item
-    if (line.trim().startsWith('- ') || line.trim().startsWith('* ')) {
-      const content = line.trim().substring(2);
-      return (
-        <div key={idx} className="flex items-start gap-2 text-slate-600 text-sm leading-relaxed mb-1.5 font-sans pl-1">
-          <span className="text-slate-400 select-none mt-0.5">•</span>
-          <span dangerouslySetInnerHTML={{ __html: parseBoldText(content) }} />
-        </div>
-      );
-    }
-    // Normal paragraphs
-    if (line.trim() === '') {
-      return <div key={idx} className="h-1.5" />;
-    }
-    return (
-      <p 
-        key={idx} 
-        className="text-slate-600 text-sm leading-relaxed mb-2 font-sans"
-        dangerouslySetInnerHTML={{ __html: parseBoldText(line) }}
-      />
-    );
-  });
-}
-
-// Simple bold parser: **text** to <strong>text</strong>
-function parseBoldText(text: string): string {
-  return text.replace(/\*\*(.*?)\*\*/g, '<strong class="font-semibold text-slate-800">$1</strong>');
-}
