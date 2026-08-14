@@ -12,17 +12,13 @@ import {
 } from '@xyflow/react';
 import type { Node, Edge } from '@xyflow/react';
 import dagre from '@dagrejs/dagre';
-import { FunctionPlotter, type GraphData } from './FunctionPlotter';
-import { KaTeXEquation } from './MathRenderer';
 import '@xyflow/react/dist/style.css';
 
-// Define hierarchical node interface from backend
+// Unified pure hierarchical node interface
 export interface MindmapNode {
   id: string;
   label: string;
   summary: string;
-  equations?: string[];
-  graph?: GraphData;
   imageUrl?: string;
   imageCaption?: string;
   imageAspectRatio?: number;
@@ -33,8 +29,6 @@ interface FlatCustomNodeData {
   id: string;
   label: string;
   summary: string;
-  equations?: string[];
-  graph?: GraphData;
   imageUrl?: string;
   imageCaption?: string;
   hasChildren: boolean;
@@ -44,32 +38,22 @@ interface FlatCustomNodeData {
   onToggleExpand: () => void;
 }
 
-// Custom node component matching the clean, structured design of the application
+// Clean, uniform node card component matching History & Geography modes
 function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
   const isSelected = data.isSelected;
   const isRoot = data.id === 'root';
   const hasImage = Boolean(data.imageUrl);
-  const hasGraph = Boolean(data.graph && data.graph.fn);
-  const hasEquations = Boolean(data.equations && data.equations.length > 0);
-
-  // Dynamic card layout dimensions
-  let cardWidth = 'w-[240px]';
-  if (hasGraph || hasImage) {
-    cardWidth = 'w-[270px]';
-  } else if (hasEquations) {
-    cardWidth = 'w-[260px]';
-  }
 
   return (
     <div 
       className={`relative bg-white border text-left flex flex-col select-none cursor-pointer transition-all duration-150 rounded-md shadow-xs
-        ${cardWidth}
-        ${hasGraph || hasImage ? 'p-3' : hasEquations ? 'p-3 min-h-[80px]' : 'px-4 py-3 min-h-[58px] justify-between'}
+        w-[240px]
+        ${hasImage ? 'p-3' : 'px-4 py-3 min-h-[56px] justify-between'}
         ${isSelected ? 'border-blue-500 ring-2 ring-blue-500 shadow-sm' : 'border-slate-200 hover:border-slate-300'}
       `}
       onClick={data.onSelect}
     >
-      {/* Target handle - transparent connection point (no visible dot) */}
+      {/* Target handle - transparent connection anchor */}
       <Handle 
         type="target" 
         position={Position.Left} 
@@ -83,16 +67,9 @@ function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
           border: 'none'
         }} 
       />
-      
-      {/* 1. Dynamic 2D Mathematical & Physics Curve Thumbnail */}
-      {hasGraph && data.graph && (
-        <div className="mb-2.5 w-full overflow-hidden rounded border border-slate-100 bg-slate-50">
-          <FunctionPlotter graph={data.graph} isThumbnail={true} />
-        </div>
-      )}
 
-      {/* 2. Educational Image Card (if no graph) */}
-      {!hasGraph && hasImage && (
+      {/* Educational Image Card (if available) */}
+      {hasImage && (
         <div className="mb-2.5 w-full bg-slate-100 rounded border border-slate-100 overflow-hidden flex flex-col items-center justify-center">
           <img 
             src={data.imageUrl} 
@@ -113,14 +90,7 @@ function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
         </div>
       )}
 
-      {/* 3. Primary Equation Preview Badge */}
-      {hasEquations && data.equations && data.equations[0] && (
-        <div className="mb-2 px-2 py-1 bg-slate-50 border border-slate-100 rounded flex items-center justify-center overflow-x-auto">
-          <KaTeXEquation formula={data.equations[0]} displayMode={false} className="text-xs text-slate-800" />
-        </div>
-      )}
-
-      {/* Node Title & Expand Button */}
+      {/* Node Title & Expand/Collapse Button */}
       <div className="flex items-center justify-between flex-1 gap-2">
         <div className="flex-1 py-0.5">
           <span className="text-slate-800 text-xs font-semibold leading-normal font-sans block select-none">
@@ -142,7 +112,7 @@ function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
         )}
       </div>
 
-      {/* Source handle - transparent connection point (no visible dot) */}
+      {/* Source handle - transparent connection anchor */}
       <Handle 
         type="source" 
         position={Position.Right} 
@@ -168,7 +138,7 @@ interface MindmapCanvasProps {
   onSelectNode: (node: MindmapNode | null) => void;
 }
 
-// Synchronous Dagre layout computation for instant, synchronous placement
+// Synchronous Dagre layout computation for instant placement
 function runDagreLayoutSync(
   rawNodes: Array<{ id: string; width: number; height: number }>, 
   rawEdges: Array<{ id: string; source: string; target: string }>
@@ -216,7 +186,7 @@ function MindmapCanvasInner({
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
-  // Compute graph hierarchy and positions synchronously
+  // Compute graph hierarchy and layout positions synchronously
   const { flowNodes, flowEdges } = useMemo(() => {
     if (!mindmap) return { flowNodes: [], flowEdges: [] };
 
@@ -224,8 +194,6 @@ function MindmapCanvasInner({
       id: string;
       label: string;
       summary: string;
-      equations?: string[];
-      graph?: GraphData;
       imageUrl?: string;
       imageCaption?: string;
       hasChildren: boolean;
@@ -237,30 +205,18 @@ function MindmapCanvasInner({
     const edgeList: Array<{ id: string; source: string; target: string }> = [];
 
     function traverse(node: MindmapNode) {
-      // Default to expanded if expandedIds is empty or contains the node
+      // Guaranteed visibility: expand by default if expandedIds is empty or contains the node
       const isExpanded = expandedIds.size === 0 || expandedIds.has(node.id);
       const hasChildren = Boolean(node.children && node.children.length > 0);
       const hasImage = Boolean(node.imageUrl);
-      const hasGraph = Boolean(node.graph && node.graph.fn);
-      const hasEquations = Boolean(node.equations && node.equations.length > 0);
 
-      // Compute dynamic bounding box for Dagre layout
-      let width = 240;
-      let height = 58;
-      if (hasGraph || hasImage) {
-        width = 270;
-        height = 200;
-      } else if (hasEquations) {
-        width = 260;
-        height = 84;
-      }
+      const width = 240;
+      const height = hasImage ? 190 : 56;
 
       nodeList.push({
         id: node.id,
         label: node.label,
         summary: node.summary,
-        equations: node.equations,
-        graph: node.graph,
         imageUrl: node.imageUrl,
         imageCaption: node.imageCaption,
         hasChildren,
@@ -297,8 +253,6 @@ function MindmapCanvasInner({
           id: n.id,
           label: n.label,
           summary: n.summary,
-          equations: n.equations,
-          graph: n.graph,
           imageUrl: n.imageUrl,
           imageCaption: n.imageCaption,
           hasChildren: n.hasChildren,
@@ -326,16 +280,15 @@ function MindmapCanvasInner({
     setEdges(flowEdges);
   }, [flowNodes, flowEdges, setNodes, setEdges]);
 
-  // Whenever the document/mindmap changes, orient camera smoothly focused onto the first (root) node
+  // Whenever the active mindmap is loaded or changed, orient camera smoothly onto the root node
   useEffect(() => {
     if (!mindmap || flowNodes.length === 0) return;
 
     const rootNode = flowNodes.find(n => n.id === mindmap.id) || flowNodes[0];
     if (rootNode && rootNode.position) {
       const timer = setTimeout(() => {
-        // Center camera smoothly onto the initial node
-        setCenter(rootNode.position.x + 130, rootNode.position.y + 30, { zoom: 0.95, duration: 400 });
-      }, 60);
+        setCenter(rootNode.position.x + 120, rootNode.position.y + 28, { zoom: 1.0, duration: 400 });
+      }, 50);
       return () => clearTimeout(timer);
     }
   }, [mindmap?.id, flowNodes.length, setCenter]);

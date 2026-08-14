@@ -3,8 +3,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 import { UploadZone } from './components/UploadZone';
 import { MindmapCanvas, type MindmapNode } from './components/MindmapCanvas';
-import { MathRenderer, KaTeXEquation } from './components/MathRenderer';
-import { FunctionPlotter } from './components/FunctionPlotter';
+import { MathRenderer } from './components/MathRenderer';
 import { useToast } from './components/Toast';
 import { 
   Maximize2, 
@@ -14,9 +13,9 @@ import {
   X, 
   BookOpen, 
   Cpu, 
-  Undo2,
-  Calculator
+  Undo2
 } from 'lucide-react';
+
 
 // Document storage model
 export interface SavedDocument {
@@ -909,36 +908,7 @@ export default function App() {
                   <div className="h-[2px] bg-slate-100 w-10"></div>
                 </div>
 
-                {/* 1. Dynamic Interactive 2D Function Plotter */}
-                {selectedNode.graph && selectedNode.graph.fn && (
-                  <div className="space-y-1.5">
-                    <div className="flex items-center gap-1.5 text-slate-500">
-                      <Calculator className="w-3.5 h-3.5 text-blue-500" />
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                        Interactive Curve & Behavior
-                      </span>
-                    </div>
-                    <FunctionPlotter graph={selectedNode.graph} isThumbnail={false} />
-                  </div>
-                )}
-
-                {/* 2. Featured LaTeX Equations & Variables */}
-                {selectedNode.equations && selectedNode.equations.length > 0 && (
-                  <div className="space-y-2">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
-                      Key Mathematical Formulations
-                    </span>
-                    <div className="space-y-1.5">
-                      {selectedNode.equations.map((eq, i) => (
-                        <div key={i} className="p-3 bg-slate-50 border border-slate-100 rounded-md overflow-x-auto">
-                          <KaTeXEquation formula={eq} displayMode={true} className="text-sm text-slate-800" />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* 3. Educational Image */}
+                {/* 1. Educational Image (if attached) */}
                 {selectedNode.imageUrl && (
                   <div className="w-full bg-slate-100 rounded-md border border-slate-100 overflow-hidden">
                     <img 
@@ -957,17 +927,15 @@ export default function App() {
                   </div>
                 )}
 
-                {/* 4. Structured KaTeX & Markdown Summary */}
-                <div className="space-y-2 pt-1 border-t border-slate-100">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
-                    Concept Breakdown
-                  </span>
+                {/* 2. Structured KaTeX & Markdown Summary */}
+                <div className="space-y-2 pt-1">
                   <MathRenderer content={selectedNode.summary} />
                 </div>
               </div>
             </>
           )}
         </div>
+
 
       </main>
     </div>

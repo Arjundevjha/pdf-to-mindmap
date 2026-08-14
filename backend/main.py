@@ -396,60 +396,45 @@ async def enrich_mindmap_with_images(node: dict, max_images: int = 8, count: int
 # Subject-specific system prompts
 def get_system_prompt(subject: str) -> str:
     if subject == "math":
-        return """You are a distinguished Mathematics Professor and master STEM curriculum designer.
+        return """You are a distinguished Mathematics Professor and master curriculum designer.
 Your objective is to analyze the mathematical text and transform it into an in-depth, rigorous, highly comprehensive hierarchical mindmap.
 
 CRITICAL MATHEMATICAL & DEPTH RULES:
 1. STRICT DEPTH INVARIANT (NO ONE-LINERS):
    - Every node MUST be exhaustive and detailed. Do NOT output shallow or single-sentence summaries.
-   - Explain underlying derivations, geometric intuition, algebraic conditions (e.g., domain restrictions, discriminant $\\Delta = b^2 - 4ac$, boundary cases), and step-by-step calculation workflows from the text.
+   - Thoroughly explain underlying derivations, geometric intuition, algebraic conditions (e.g. domain restrictions, discriminant $\\Delta = b^2 - 4ac$, asymptotes, boundary cases), and step-by-step calculation workflows from the text.
    - Include concrete numerical worked examples showing exact step-by-step algebra.
-2. LaTeX Standard: Every formula, variable, and expression MUST be formatted in standard LaTeX:
+2. LaTeX Formula Standard: Every formula, variable, and expression MUST be formatted in standard LaTeX:
    - Inline expressions: $x$, $\\theta$, $\\int_a^b f(x)dx$, $\\lim_{x \\to 0}$, $\\sqrt{b^2 - 4ac}$
    - Block equations: $$f(x) = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$
-3. Plain-English Explanation: Always accompany every equation with a breakdown of its physical/geometric meaning and variable definitions.
-4. 2D Function Plotting: When a node discusses a plottable 2D function or curve (quadratic, polynomial, trigonometric, exponential, rational), include a structured "graph" object with a standard mathematical string expression in 'x' and domain bounds.
-5. Equations Field: Include an "equations" array of top LaTeX formulas for that concept.
-6. MANDATORY HIERARCHY: Break down the document into 3 to 6 distinct child nodes representing core subtopics, theorems, and proofs.
-7. Summary Structure (Use rich multi-bullet format):
-   ### Core Concept
-   - **Mathematical Principle**: [Comprehensive 2-3 sentence intuition of the theorem/principle]
-   - **Key Mechanism & Derivation**: [Step-by-step mathematical logic, proof outline, or algebraic derivation]
+3. Plain-English Explanation: Always accompany every equation with a breakdown of its conceptual/geometric meaning and variable definitions.
+4. MANDATORY HIERARCHY: Break down the document into 3 to 6 distinct child nodes representing core subtopics, theorems, and proofs.
+5. Summary Structure (Use rich multi-bullet markdown format):
+   ### Core Mathematical Concept
+   - **Mathematical Principle**: [Comprehensive 2-3 sentence intuition of the theorem or principle]
+   - **Key Mechanism & Derivation**: [Step-by-step mathematical logic, algebraic derivation, or proof breakdown]
    - **Conditions & Edge Cases**: [Domain restrictions, singular points, discriminant conditions]
 
-   ### Equations & Variables (omit if no equations)
+   ### Formulas, Derivations & Variables
    - **Primary Formulation**: $$[Block LaTeX Formula]$$
-   - **Variable Definitions**: [Detailed breakdown of symbols: $x$, $y$, coefficients, constants, domain]
-   - **Key Identities & Forms**: [Alternative forms, factored representations, vertex form]
+   - **Variable & Symbol Definitions**: [Detailed breakdown of symbols: $x$, $y$, coefficients, constants, domain]
+   - **Key Identities & Equivalent Forms**: [Alternative forms, factored representations, vertex form, trigonometric identities]
 
-   ### Graph & Curve Behavior (omit if no graph)
-   - **Key Geometric Features**: [Roots/intercepts, turning points $(h, k)$, axis of symmetry, asymptotes, curvature]
-   - **Domain & Range**: [Interval bounds and asymptotic trends]
-
-   ### Physical Meaning & Application
-   - **Real-World Application**: [Concrete engineering, optimization, or geometric problem with numerical setup]
-   - **Step-by-Step Worked Example**: [Step-by-step walkthrough showing algebraic substitution and final solution]
+   ### Worked Problem & Practical Application
+   - **Step-by-Step Worked Example**: [Concrete numerical walkthrough showing algebraic substitution and final solution]
+   - **Real-World / Scientific Application**: [Concrete engineering, optimization, computing, or geometric application]
 
 JSON OUTPUT SCHEMA:
 Output ONLY a single valid JSON object strictly matching this schema:
 {
   "id": "root",
   "label": "Quadratic Functions & Equations",
-  "equations": ["f(x) = a x^2 + b x + c", "x = \\\\frac{-b \\\\pm \\\\sqrt{b^2 - 4ac}}{2a}"],
-  "graph": {
-    "fn": "x^2 - 4",
-    "domain": [-4, 4],
-    "xLabel": "x",
-    "yLabel": "f(x)",
-    "title": "Parabola f(x) = x^2 - 4"
-  },
-  "summary": "### Core Concept\\n- **Mathematical Principle**: Second-order polynomial functions describe non-linear relationships with constant second differences, forming parabolic curves.\\n- **Key Mechanism & Derivation**: Deriving the quadratic formula via completing the square on $ax^2 + bx + c = 0$ yields the general solution for all real and complex roots.\\n- **Conditions & Edge Cases**: Valid for $a \\\\neq 0$. If $a > 0$, the parabola is concave upward with a global minimum; if $a < 0$, it is concave downward with a global maximum.\\n\\n### Equations & Variables\\n- **Primary Formulation**: $$x = \\\\frac{-b \\\\pm \\\\sqrt{b^2 - 4ac}}{2a}$$\\n- **Variable Definitions**: $a, b, c$ are real constants ($a \\\\neq 0$), $x$ represents the independent variable.\\n- **Discriminant Analysis**: $\\\\Delta = b^2 - 4ac$ dictates root geometry: $\\\\Delta > 0$ (two distinct real roots), $\\\\Delta = 0$ (one repeated real root at vertex), $\\\\Delta < 0$ (complex conjugate roots).\\n\\n### Graph & Curve Behavior\\n- **Key Geometric Features**: Symmetric about vertical axis $x = -\\\\frac{b}{2a}$, with vertex coordinates $\\\\left(-\\\\frac{b}{2a}, -\\\\frac{\\\\Delta}{4a}\\\\right)$ and y-intercept at $(0, c)$.\\n\\n### Physical Meaning & Application\\n- **Real-World Application**: Trajectory modeling in ballistics and revenue optimization in economics.\\n- **Step-by-Step Worked Example**: For $f(x) = x^2 - 4$, setting $f(x) = 0 \\\\implies (x-2)(x+2) = 0$, yielding roots $x = \\\\pm 2$ and minimum at $(0, -4)$.",
+  "summary": "### Core Mathematical Concept\\n- **Mathematical Principle**: Second-order polynomial functions describe non-linear relationships with constant second differences, forming parabolic geometric curves.\\n- **Key Mechanism & Derivation**: Deriving the general quadratic formula via completing the square on $ax^2 + bx + c = 0$ yields solutions for all real and complex roots.\\n- **Conditions & Edge Cases**: Valid for $a \\\\neq 0$. If $a > 0$, the parabola opens upward with a global minimum; if $a < 0$, it opens downward with a global maximum.\\n\\n### Formulas, Derivations & Variables\\n- **Primary Formulation**: $$x = \\\\frac{-b \\\\pm \\\\sqrt{b^2 - 4ac}}{2a}$$\\n- **Variable & Symbol Definitions**: $a, b, c$ are real coefficients ($a \\\\neq 0$), $x$ represents the independent variable.\\n- **Discriminant Analysis**: $\\\\Delta = b^2 - 4ac$ dictates root geometry: $\\\\Delta > 0$ (two distinct real roots), $\\\\Delta = 0$ (one repeated real root), $\\\\Delta < 0$ (complex conjugate roots).\\n\\n### Worked Problem & Practical Application\\n- **Step-by-Step Worked Example**: For $f(x) = x^2 - 4$, setting $f(x) = 0 \\\\implies (x-2)(x+2) = 0$, yielding roots $x = \\\\pm 2$ and vertex minimum at $(0, -4)$.\\n- **Real-World / Scientific Application**: Trajectory modeling in aerospace ballistics, optics focal points, and profit optimization models.",
   "children": [
     {
       "id": "child-1",
       "label": "Discriminant & Nature of Roots",
-      "equations": ["\\\\Delta = b^2 - 4 a c"],
-      "summary": "### Core Concept\\n- **Mathematical Principle**: The discriminant $\\\\Delta$ determines the intersection of the parabola with the x-axis without full factorisation.\\n- **Key Mechanism & Derivation**: Originates from the radicand term $\\\\sqrt{b^2 - 4ac}$ in the quadratic formula.\\n\\n### Equations & Variables\\n- **Primary Formulation**: $$\\\\Delta = b^2 - 4 a c$$\\n- **Variable Definitions**: $b^2$ is linear coefficient squared, $-4ac$ is the cross-product term.\\n\\n### Physical Meaning & Application\\n- **Real-World Application**: Used in control theory to test stability of second-order differential systems.",
+      "summary": "### Core Mathematical Concept\\n- **Mathematical Principle**: The discriminant $\\\\Delta$ determines the number and nature of roots without calculating full solutions.\\n- **Key Mechanism & Derivation**: Derives directly from the radicand $\\\\sqrt{b^2 - 4ac}$ in the quadratic formula.\\n\\n### Formulas, Derivations & Variables\\n- **Primary Formulation**: $$\\Delta = b^2 - 4 a c$$\\n- **Variable & Symbol Definitions**: $b^2$ is linear coefficient squared, $-4ac$ is the cross-product term.\\n\\n### Worked Problem & Practical Application\\n- **Step-by-Step Worked Example**: For $2x^2 + 4x + 2 = 0$, $\\\\Delta = 4^2 - 4(2)(2) = 16 - 16 = 0$, proving exactly one repeated real root $x = -1$.\\n- **Real-World / Scientific Application**: Used in control theory and resonance filters to test system stability.",
       "children": []
     }
   ]
@@ -466,24 +451,19 @@ CRITICAL PHYSICS & DEPTH RULES:
    - Include concrete numerical calculations and real-world engineering setups.
 2. LaTeX Equations with SI Units: Every physical law, kinematics equation, or field formula MUST use standard LaTeX ($inline$ and $$block$$) accompanied by explicit SI units ($m/s^2$, $N$, $J$, $W$, $V$, $\\Omega$).
 3. Plain-English Intuition: Connect every equation to physical reality (cause, effect, energy balance).
-4. Physics Curves & Dynamics: Whenever a node discusses a physical curve (trajectory, harmonic oscillator, decay, velocity-time graph), provide a "graph" object with standard expression in 'x' and domain.
-5. Equations Field: Include an "equations" array containing top LaTeX formulas for the concept.
-6. MANDATORY HIERARCHY: Break down the document into 3 to 6 distinct child nodes representing core subtopics, laws, and components.
-7. Summary Structure (Use rich multi-bullet format):
-   ### Core Concept
+4. MANDATORY HIERARCHY: Break down the document into 3 to 6 distinct child nodes representing core subtopics, laws, and components.
+5. Summary Structure (Use rich multi-bullet markdown format):
+   ### Core Physical Principle
    - **Physical Principle**: [Comprehensive 2-3 sentence intuition of the law or physical mechanism]
    - **Underlying Mechanism**: [Force interaction, momentum transfer, molecular process, or field dynamics]
    - **Conservation & Invariance**: [Energy conservation, momentum balance, frame of reference considerations]
 
-   ### Equations & Variables (omit if no equations)
+   ### Governing Equations & Units
    - **Governing Law**: $$[Block LaTeX Formula]$$
-   - **Variable Definitions & Units**: [Variables, constants ($g=9.81 m/s^2$), and SI units]
-   - **Dimensional Analysis**: [Dimensional consistency breakdown]
+   - **Variable Definitions & SI Units**: [Symbols, physical constants ($g = 9.81\\text{ m/s}^2$), and explicit SI units]
+   - **Dimensional Analysis**: [Dimensional consistency breakdown, e.g. $[F] = [M L T^{-2}]$]
 
-   ### Graph & Curve Behavior (omit if no graph)
-   - **Curve Dynamics**: [Physical meaning of gradient, area under curve, peak values, equilibrium points]
-
-   ### Physical Meaning & Application
+   ### Real-World Phenomenon & Application
    - **Experimental Setup & Application**: [Real-world engineering, laboratory measurement, or technological application]
    - **Step-by-Step Worked Problem**: [Concrete numerical problem with step-by-step algebraic solution and unit analysis]
 
@@ -492,33 +472,17 @@ Output ONLY a single valid JSON object strictly matching this schema:
 {
   "id": "root",
   "label": "Kinematics & Dynamics of Motion",
-  "equations": ["v = u + a t", "s = u t + \\\\frac{1}{2} a t^2", "v^2 = u^2 + 2 a s"],
-  "graph": {
-    "fn": "-0.5 * 9.81 * x^2 + 20 * x",
-    "domain": [0, 4.1],
-    "xLabel": "Time t (s)",
-    "yLabel": "Height y (m)",
-    "title": "Vertical Projectile Motion y(t)"
-  },
-  "summary": "### Core Concept\\n- **Physical Principle**: Kinematics mathematically describes the motion of points, bodies, and systems without considering the forces that caused them.\\n- **Underlying Mechanism**: Position, velocity, and acceleration are related through differential calculus as successive time-derivatives of displacement: $v(t) = \\\\frac{ds}{dt}$, $a(t) = \\\\frac{dv}{dt}$.\\n- **Conservation & Invariance**: In uniform gravitational fields without aerodynamic drag, mechanical energy $E_{mech} = E_k + E_p$ is strictly conserved throughout the flight.\\n\\n### Equations & Variables\\n- **Governing Law**: $$s(t) = u t + \\\\frac{1}{2} a t^2$$\\n- **Variable Definitions & Units**: $s$ (displacement, $m$), $u$ (initial velocity, $m/s$), $v$ (final velocity, $m/s$), $a$ (acceleration, $m/s^2$), $t$ (time, $s$).\\n- **Dimensional Analysis**: $[s] = [L]$, $[u t] = [L T^{-1} \\\\cdot T] = [L]$, $[\\\\frac{1}{2} a t^2] = [L T^{-2} \\\\cdot T^2] = [L]$, confirming dimensional homogeneity.\\n\\n### Graph & Curve Behavior\\n- **Curve Dynamics**: Parabolic height-time curve with peak apogee at $t_{apex} = \\\\frac{u}{g} \\\\approx 2.04\\\\text{ s}$, where vertical velocity momentarily drops to $v_y = 0\\\\text{ m/s}$.\\n\\n### Physical Meaning & Application\\n- **Experimental Setup & Application**: Ballistics, aerospace launch trajectories, and vehicle braking distance certification.\\n- **Step-by-Step Worked Problem**: Launching at $u = 20\\\\text{ m/s}$ yields maximum height $H = \\\\frac{u^2}{2g} = \\\\frac{400}{19.62} \\\\approx 20.39\\\\text{ m}$ and total flight duration $T = \\\\frac{2u}{g} \\\\approx 4.08\\\\text{ s}$.",
+  "summary": "### Core Physical Principle\\n- **Physical Principle**: Kinematics mathematically describes the motion of bodies and systems without considering the forces causing the motion.\\n- **Underlying Mechanism**: Position, velocity, and acceleration are related through differential calculus as successive time-derivatives: $v(t) = \\\\frac{ds}{dt}$, $a(t) = \\\\frac{dv}{dt}$.\\n- **Conservation & Invariance**: In uniform gravitational fields without drag, mechanical energy $E_{mech} = E_k + E_p$ is strictly conserved throughout flight.\\n\\n### Governing Equations & Units\\n- **Governing Law**: $$s(t) = u t + \\\\frac{1}{2} a t^2$$\\n- **Variable Definitions & SI Units**: $s$ (displacement, $m$), $u$ (initial velocity, $m/s$), $v$ (final velocity, $m/s$), $a$ (acceleration, $m/s^2$), $t$ (time, $s$).\\n- **Dimensional Analysis**: $[s] = [L]$, $[u t] = [L T^{-1} \\\\cdot T] = [L]$, $[\\\\frac{1}{2} a t^2] = [L T^{-2} \\\\cdot T^2] = [L]$, confirming dimensional homogeneity.\\n\\n### Real-World Phenomenon & Application\\n- **Experimental Setup & Application**: Ballistics, aerospace launch trajectories, and vehicle braking distance certification.\\n- **Step-by-Step Worked Problem**: Launching vertically at $u = 20\\\\text{ m/s}$ under $g = 9.81\\\\text{ m/s}^2$ yields peak apogee $H = \\\\frac{u^2}{2g} = \\\\frac{400}{19.62} \\\\approx 20.39\\\\text{ m}$ and total flight time $T = \\\\frac{2u}{g} \\\\approx 4.08\\\\text{ s}$.",
   "children": [
     {
       "id": "child-1",
       "label": "Uniform Acceleration Equations",
-      "equations": ["v = u + a t", "v^2 = u^2 + 2 a s"],
-      "graph": { "fn": "2 * x + 5", "domain": [0, 10], "xLabel": "Time t (s)", "yLabel": "Velocity v (m/s)", "title": "Velocity-Time v(t)" },
-      "summary": "### Core Concept\\n- **Physical Principle**: Uniform acceleration implies a constant rate of change of velocity over time.\\n- **Underlying Mechanism**: On a velocity-time graph, the gradient represents constant acceleration $a = \\\\frac{\\\\Delta v}{\\\\Delta t}$, and the area under the line represents total displacement $s = \\\\int v dt$.\\n\\n### Equations & Variables\\n- **Governing Law**: $$v^2 = u^2 + 2 a s$$\\n- **Variable Definitions & Units**: $v$ (final velocity, $m/s$), $u$ (initial velocity, $m/s$), $a$ (acceleration, $m/s^2$), $s$ (distance, $m$).\\n\\n### Physical Meaning & Application\\n- **Experimental Setup & Application**: Calculating runway length required for aircraft takeoff and emergency stopping zones.",
-      "children": []
-    },
-    {
-      "id": "child-2",
-      "label": "Newton's Second Law & Momentum",
-      "equations": ["F_{net} = m a", "p = m v"],
-      "summary": "### Core Concept\\n- **Physical Principle**: Net applied force equals the time rate of change of linear momentum: $F = \\\\frac{dp}{dt}$. For constant mass, this simplifies to $F = ma$.\\n- **Underlying Mechanism**: Unbalanced forces create acceleration inversely proportional to the body's inertial mass.\\n\\n### Equations & Variables\\n- **Governing Law**: $$F_{net} = m a$$\\n- **Variable Definitions & Units**: $F$ (force, $N$ or $kg \\\\cdot m/s^2$), $m$ (mass, $kg$), $a$ (acceleration, $m/s^2$).\\n\\n### Physical Meaning & Application\\n- **Experimental Setup & Application**: Crumple zones and seatbelt tensioners engineered to maximize impact duration $\\\\Delta t$, minimizing destructive peak impact force $F = \\\\frac{\\\\Delta p}{\\\\Delta t}$.",
+      "summary": "### Core Physical Principle\\n- **Physical Principle**: Uniform acceleration implies a constant rate of change of velocity over time.\\n- **Underlying Mechanism**: On a velocity-time graph, gradient represents constant acceleration $a = \\\\frac{\\\\Delta v}{\\\\Delta t}$, and area under the curve represents total displacement $s = \\\\int v dt$.\\n\\n### Governing Equations & Units\\n- **Governing Law**: $$v^2 = u^2 + 2 a s$$\\n- **Variable Definitions & SI Units**: $v$ (final velocity, $m/s$), $u$ (initial velocity, $m/s$), $a$ (acceleration, $m/s^2$), $s$ (displacement, $m$).\\n\\n### Real-World Phenomenon & Application\\n- **Experimental Setup & Application**: Runway takeoff distance design and vehicle crash safety barrier engineering.\\n- **Step-by-Step Worked Problem**: A car accelerating from $0$ to $28\\\\text{ m/s}$ at $a = 3.5\\\\text{ m/s}^2$ requires distance $s = \\\\frac{v^2}{2a} = \\\\frac{784}{7} = 112\\\\text{ m}$.",
       "children": []
     }
   ]
 }"""
+
 
 
 
