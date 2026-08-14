@@ -773,10 +773,13 @@ export default function App() {
           ) : (
             <div className="flex flex-col gap-1.5">
               {userDocuments.map((doc) => (
-                <button
+                <div
                   key={doc.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => handleSelectDocument(doc.id)}
-                  className={`w-full text-left px-3 py-2.5 border text-xs flex items-center justify-between group transition-none rounded-none
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleSelectDocument(doc.id); }}
+                  className={`w-full text-left px-3 py-2.5 border text-xs flex items-center justify-between group transition-none rounded-none cursor-pointer select-none
                     ${doc.id === activeDocId 
                       ? 'bg-slate-50 border-slate-300 text-slate-800 font-semibold' 
                       : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'}
@@ -785,13 +788,14 @@ export default function App() {
                   <span className="truncate pr-4 leading-normal">{doc.name}</span>
                   <button
                     onClick={(e) => handleDeleteDocument(doc.id, e)}
-                    className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-rose-500 p-0.5 transition-none focus:opacity-100"
+                    className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-rose-500 p-0.5 transition-none focus:opacity-100 cursor-pointer"
                     title="Delete document"
                   >
                     <Trash2 className="w-3.5 h-3.5 stroke-[1.5]" />
                   </button>
-                </button>
+                </div>
               ))}
+
             </div>
           )}
         </div>
