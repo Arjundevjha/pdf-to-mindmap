@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+
 import { UploadZone } from './components/UploadZone';
 import { MindmapCanvas, type MindmapNode } from './components/MindmapCanvas';
 import { MathRenderer, KaTeXEquation } from './components/MathRenderer';
@@ -152,15 +153,43 @@ export default function App() {
   // Undo history stack for expanded node states
   const [undoHistory, setUndoHistory] = useState<string[][]>([]);
 
-  // Filter documents by logged in user
-  const userDocuments = documents.filter(doc => doc.userEmail === currentUserEmail);
+  // Filter documents: Show user's documents if logged in, or all local documents
+  const userDocuments = useMemo(() => {
+    return documents.filter(doc => !currentUserEmail || !doc.userEmail || doc.userEmail === currentUserEmail);
+  }, [documents, currentUserEmail]);
 
-  // Find the active document
-  const activeDoc = userDocuments.find(doc => doc.id === activeDocId) || null;
+  // Find the active document with fallback to first document
+  const activeDoc = useMemo(() => {
+    return userDocuments.find(doc => doc.id === activeDocId) || (userDocuments.length > 0 ? userDocuments[0] : null);
+  }, [userDocuments, activeDocId]);
+
+  // Ensure activeDocId stays in sync if activeDoc fallback was chosen
+  useEffect(() => {
+    if (activeDoc && activeDoc.id !== activeDocId) {
+      setActiveDocId(activeDoc.id);
+    }
+  }, [activeDoc, activeDocId]);
+
+  // Auto-select root node if active document is loaded but no node selected
+  useEffect(() => {
+    if (activeDoc && activeDoc.data && !selectedNode) {
+      setSelectedNode(activeDoc.data);
+      // Auto-expand all nodes of the active document
+      const allIds = new Set<string>();
+      const collect = (n: MindmapNode) => {
+        if (n.id) allIds.add(n.id);
+        if (n.children && Array.isArray(n.children)) n.children.forEach(collect);
+      };
+      collect(activeDoc.data);
+      setExpandedIds(allIds);
+    }
+  }, [activeDoc, selectedNode]);
 
   // Persist state updates to localStorage
   useEffect(() => {
-    localStorage.setItem('pdf_mindmaps_docs', JSON.stringify(documents));
+    if (documents.length > 0) {
+      localStorage.setItem('pdf_mindmaps_docs', JSON.stringify(documents));
+    }
   }, [documents]);
 
   useEffect(() => {
@@ -187,31 +216,32 @@ export default function App() {
     localStorage.setItem('pdf_mindmaps_subject', selectedSubject);
   }, [selectedSubject]);
 
-  // Hydrate user documents from Supabase database
+  // Hydrate user documents from database gracefully without wiping local documents
   useEffect(() => {
-    if (!currentUserEmail) {
-      setDocuments([]);
-      return;
-    }
+    if (!currentUserEmail) return;
 
     const fetchUserDocuments = async () => {
       try {
         const response = await fetch(`${API_BASE}/documents?email=${encodeURIComponent(currentUserEmail)}`);
         if (response.ok) {
           const docs = await response.json();
-          setDocuments(docs);
-        } else {
-          console.error("Failed to load documents from database");
-          toast.warning("Failed to load saved documents from database.");
+          if (Array.isArray(docs) && docs.length > 0) {
+            setDocuments(prev => {
+              // Merge remote and local documents uniquely by ID
+              const existingIds = new Set(docs.map(d => d.id));
+              const localOnly = prev.filter(d => !existingIds.has(d.id));
+              return [...docs, ...localOnly];
+            });
+          }
         }
       } catch (err) {
-        console.error("Error loading user documents:", err);
-        toast.warning("Could not connect to database to sync documents.");
+        console.warn("Database sync offline, using local cached documents:", err);
       }
     };
 
     fetchUserDocuments();
   }, [currentUserEmail]);
+
 
   // Handle Authentication Submission
   const handleAuthSubmit = async (e: React.FormEvent) => {

@@ -1,4 +1,4 @@
-import { useMemo, useEffect, useState, useRef } from 'react';
+import { useMemo, useEffect } from 'react';
 import { 
   ReactFlow, 
   Background, 
@@ -10,7 +10,6 @@ import {
 } from '@xyflow/react';
 import type { Node, Edge } from '@xyflow/react';
 import dagre from '@dagrejs/dagre';
-import type { LayoutWorkerInput, LayoutWorkerOutput } from '../workers/layout.worker';
 import { FunctionPlotter, type GraphData } from './FunctionPlotter';
 import { KaTeXEquation } from './MathRenderer';
 import '@xyflow/react/dist/style.css';
@@ -61,10 +60,10 @@ function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
 
   return (
     <div 
-      className={`relative bg-white border text-left flex flex-col select-none cursor-pointer transition-all duration-150 rounded-md
+      className={`relative bg-white border text-left flex flex-col select-none cursor-pointer transition-all duration-150 rounded-md shadow-sm
         ${cardWidth}
         ${hasGraph || hasImage ? 'p-3' : hasEquations ? 'p-3 min-h-[84px]' : 'px-4 py-3 min-h-[64px] justify-between'}
-        ${isSelected ? 'border-blue-500 ring-[1px] ring-blue-500 shadow-md' : 'border-slate-200 hover:border-slate-300 shadow-sm'}
+        ${isSelected ? 'border-blue-500 ring-2 ring-blue-500 shadow-md' : 'border-slate-200 hover:border-slate-300'}
       `}
       onClick={data.onSelect}
     >
@@ -74,16 +73,16 @@ function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
         position={Position.Left} 
         style={{ 
           visibility: isRoot ? 'hidden' : 'visible',
-          background: '#cbd5e1',
+          background: '#94a3b8',
           width: '6px',
           height: '6px',
-          left: '-3.5px'
+          left: '-3px'
         }} 
       />
       
       {/* 1. Dynamic 2D Mathematical & Physics Curve Thumbnail */}
       {hasGraph && data.graph && (
-        <div className="mb-2.5 w-full overflow-hidden">
+        <div className="mb-2.5 w-full overflow-hidden rounded border border-slate-100 bg-slate-50">
           <FunctionPlotter graph={data.graph} isThumbnail={true} />
         </div>
       )}
@@ -112,7 +111,7 @@ function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
 
       {/* 3. Primary Equation Preview Badge */}
       {hasEquations && data.equations && data.equations[0] && (
-        <div className="mb-2 px-2 py-1 bg-slate-50 border border-slate-100 rounded flex items-center justify-center overflow-x-auto">
+        <div className="mb-2 px-2 py-1.5 bg-slate-50 border border-slate-100 rounded flex items-center justify-center overflow-x-auto">
           <KaTeXEquation formula={data.equations[0]} displayMode={false} className="text-xs text-slate-800" />
         </div>
       )}
@@ -120,7 +119,7 @@ function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
       {/* Node Title & Expand Button */}
       <div className="flex items-center justify-between flex-1">
         <div className="flex-1 pr-6 py-0.5">
-          <span className="text-slate-700 text-xs font-semibold leading-normal font-sans block truncate-2-lines select-none">
+          <span className="text-slate-800 text-xs font-semibold leading-normal font-sans block truncate-2-lines select-none">
             {data.label}
           </span>
         </div>
@@ -131,7 +130,7 @@ function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
               e.stopPropagation(); 
               data.onToggleExpand(); 
             }}
-            className="absolute right-2.5 top-3 w-5 h-5 border border-slate-200 text-slate-500 flex items-center justify-center bg-slate-50 hover:bg-slate-100 text-[10px] font-bold select-none cursor-pointer focus:outline-none transition-colors rounded"
+            className="absolute right-2.5 top-3 w-5 h-5 border border-slate-200 text-slate-600 flex items-center justify-center bg-slate-50 hover:bg-slate-100 text-[10px] font-bold select-none cursor-pointer focus:outline-none transition-colors rounded shadow-xs"
             aria-label={data.isExpanded ? 'Collapse node' : 'Expand node'}
           >
             {data.isExpanded ? '−' : '+'}
@@ -145,10 +144,10 @@ function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
         position={Position.Right} 
         style={{ 
           visibility: data.hasChildren && data.isExpanded ? 'visible' : 'hidden',
-          background: '#cbd5e1',
+          background: '#94a3b8',
           width: '6px',
           height: '6px',
-          right: '-3.5px'
+          right: '-3px'
         }} 
       />
     </div>
@@ -163,7 +162,7 @@ interface MindmapCanvasProps {
   onSelectNode: (node: MindmapNode) => void;
 }
 
-// Synchronous Dagre fallback if Web Worker is unavailable
+// Synchronous Dagre layout computation for instant, synchronous placement
 function runDagreLayoutSync(
   rawNodes: Array<{ id: string; width: number; height: number }>, 
   rawEdges: Array<{ id: string; source: string; target: string }>
@@ -173,10 +172,10 @@ function runDagreLayoutSync(
   const g = new dagre.graphlib.Graph();
   g.setGraph({
     rankdir: 'LR',
-    nodesep: 35,
+    nodesep: 40,
     ranksep: 90,
-    marginx: 40,
-    marginy: 40,
+    marginx: 50,
+    marginy: 50,
     align: 'DL',
   });
   g.setDefaultEdgeLabel(() => ({}));
@@ -209,30 +208,10 @@ export function MindmapCanvas({
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
-  const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({});
-  const workerRef = useRef<Worker | null>(null);
 
-  // Initialize layout Web Worker
-  useEffect(() => {
-    try {
-      workerRef.current = new Worker(
-        new URL('../workers/layout.worker.ts', import.meta.url),
-        { type: 'module' }
-      );
-    } catch (err) {
-      console.warn('Web Worker initialization failed, using synchronous fallback:', err);
-      workerRef.current = null;
-    }
-
-    return () => {
-      workerRef.current?.terminate();
-      workerRef.current = null;
-    };
-  }, []);
-
-  // Extract visible hierarchy nodes and edges based ONLY on mindmap and expandedIds
-  const { rawNodes, rawEdges, nodeMap } = useMemo(() => {
-    if (!mindmap) return { rawNodes: [], rawEdges: [], nodeMap: new Map<string, MindmapNode>() };
+  // Compute graph hierarchy and positions synchronously
+  const { flowNodes, flowEdges } = useMemo(() => {
+    if (!mindmap) return { flowNodes: [], flowEdges: [] };
 
     const nodeList: Array<{
       id: string;
@@ -246,19 +225,18 @@ export function MindmapCanvas({
       isExpanded: boolean;
       width: number;
       height: number;
+      nodeObj: MindmapNode;
     }> = [];
     const edgeList: Array<{ id: string; source: string; target: string }> = [];
-    const nMap = new Map<string, MindmapNode>();
 
     function traverse(node: MindmapNode) {
-      nMap.set(node.id, node);
       const isExpanded = expandedIds.has(node.id);
       const hasChildren = Boolean(node.children && node.children.length > 0);
       const hasImage = Boolean(node.imageUrl);
       const hasGraph = Boolean(node.graph && node.graph.fn);
       const hasEquations = Boolean(node.equations && node.equations.length > 0);
 
-      // Compute dynamic bounding box for Dagre layout engine
+      // Compute dynamic bounding box for Dagre layout
       let width = 240;
       let height = 64;
       if (hasGraph || hasImage) {
@@ -281,6 +259,7 @@ export function MindmapCanvas({
         isExpanded,
         width,
         height,
+        nodeObj: node,
       });
 
       if (isExpanded && hasChildren) {
@@ -297,80 +276,33 @@ export function MindmapCanvas({
 
     traverse(mindmap);
 
-    return { rawNodes: nodeList, rawEdges: edgeList, nodeMap: nMap };
-  }, [mindmap, expandedIds]);
+    // Compute layout positions synchronously
+    const positions = runDagreLayoutSync(nodeList, edgeList);
 
-  // Dispatch layout calculation to Web Worker or fallback
-  useEffect(() => {
-    if (rawNodes.length === 0) {
-      const animFrame = requestAnimationFrame(() => setPositions({}));
-      return () => cancelAnimationFrame(animFrame);
-    }
-
-    if (workerRef.current) {
-      const workerPayload: LayoutWorkerInput = {
-        nodes: rawNodes.map((n) => ({ id: n.id, width: n.width, height: n.height })),
-        edges: rawEdges,
-        direction: 'LR',
-      };
-
-      workerRef.current.onmessage = (event: MessageEvent<LayoutWorkerOutput>) => {
-        setPositions(event.data.positions);
-      };
-
-      workerRef.current.postMessage(workerPayload);
-    } else {
-      const animFrame = requestAnimationFrame(() => {
-        const syncPositions = runDagreLayoutSync(rawNodes, rawEdges);
-        setPositions(syncPositions);
-      });
-      return () => cancelAnimationFrame(animFrame);
-    }
-  }, [rawNodes, rawEdges]);
-
-  // Construct React Flow nodes and edges by combining layout positions with selection state
-  useEffect(() => {
-    if (rawNodes.length === 0) {
-      setNodes([]);
-      setEdges([]);
-      return;
-    }
-
-    const flowNodes: Node[] = rawNodes.map((node) => {
-      const pos = positions[node.id] || { x: 0, y: 0 };
-      const originalNode = nodeMap.get(node.id) || {
-        id: node.id,
-        label: node.label,
-        summary: node.summary,
-        equations: node.equations,
-        graph: node.graph,
-        imageUrl: node.imageUrl,
-        imageCaption: node.imageCaption,
-        children: [],
-      };
-
+    const fNodes: Node[] = nodeList.map((n) => {
+      const pos = positions[n.id] || { x: 0, y: 0 };
       return {
-        id: node.id,
+        id: n.id,
         type: 'custom',
         position: pos,
         data: {
-          id: node.id,
-          label: node.label,
-          summary: node.summary,
-          equations: node.equations,
-          graph: node.graph,
-          imageUrl: node.imageUrl,
-          imageCaption: node.imageCaption,
-          hasChildren: node.hasChildren,
-          isExpanded: node.isExpanded,
-          isSelected: node.id === selectedNodeId,
-          onSelect: () => onSelectNode(originalNode),
-          onToggleExpand: () => onToggleNodeExpand(node.id),
+          id: n.id,
+          label: n.label,
+          summary: n.summary,
+          equations: n.equations,
+          graph: n.graph,
+          imageUrl: n.imageUrl,
+          imageCaption: n.imageCaption,
+          hasChildren: n.hasChildren,
+          isExpanded: n.isExpanded,
+          isSelected: n.id === selectedNodeId,
+          onSelect: () => onSelectNode(n.nodeObj),
+          onToggleExpand: () => onToggleNodeExpand(n.id),
         },
       };
     });
 
-    const flowEdges: Edge[] = rawEdges.map((edge) => ({
+    const fEdges: Edge[] = edgeList.map((edge) => ({
       id: edge.id,
       source: edge.source,
       target: edge.target,
@@ -378,15 +310,26 @@ export function MindmapCanvas({
       style: { stroke: '#cbd5e1', strokeWidth: 1.5 },
     }));
 
+    return { flowNodes: fNodes, flowEdges: fEdges };
+  }, [mindmap, expandedIds, selectedNodeId, onSelectNode, onToggleNodeExpand]);
+
+  useEffect(() => {
     setNodes(flowNodes);
     setEdges(flowEdges);
-  }, [rawNodes, rawEdges, positions, selectedNodeId, nodeMap, onSelectNode, onToggleNodeExpand, setNodes, setEdges]);
+  }, [flowNodes, flowEdges, setNodes, setEdges]);
 
   if (!mindmap) {
     return (
-      <div className="w-full h-full flex flex-col items-center justify-center bg-slate-50 text-slate-400 select-none">
-        <p className="text-sm font-medium">No active mindmap</p>
-        <p className="text-xs mt-1">Upload a PDF from the sidebar to generate one.</p>
+      <div className="w-full h-full flex flex-col items-center justify-center bg-slate-50 text-slate-400 select-none p-6">
+        <div className="w-14 h-14 mb-4 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-400">
+          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+        </div>
+        <h3 className="text-sm font-semibold text-slate-700">No Mindmap Selected</h3>
+        <p className="text-xs text-slate-400 mt-1 max-w-sm text-center leading-relaxed">
+          Upload a PDF from the left sidebar to generate an interactive mindmap with mathematical equations, 2D plots, and study summaries.
+        </p>
       </div>
     );
   }
