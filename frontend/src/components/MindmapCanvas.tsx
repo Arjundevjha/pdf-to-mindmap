@@ -5,6 +5,8 @@ import {
   Controls, 
   useNodesState, 
   useEdgesState,
+  useReactFlow,
+  ReactFlowProvider,
   Handle,
   Position
 } from '@xyflow/react';
@@ -200,7 +202,7 @@ function runDagreLayoutSync(
   return positions;
 }
 
-export function MindmapCanvas({ 
+function MindmapCanvasInner({ 
   mindmap, 
   expandedIds, 
   selectedNodeId, 
@@ -208,6 +210,7 @@ export function MindmapCanvas({
   onSelectNode 
 }: MindmapCanvasProps) {
   
+  const { setCenter } = useReactFlow();
   const nodeTypes = useMemo(() => ({ custom: FlatCustomNode }), []);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
@@ -234,7 +237,8 @@ export function MindmapCanvas({
     const edgeList: Array<{ id: string; source: string; target: string }> = [];
 
     function traverse(node: MindmapNode) {
-      const isExpanded = expandedIds.has(node.id);
+      // Default to expanded if expandedIds is empty or contains the node
+      const isExpanded = expandedIds.size === 0 || expandedIds.has(node.id);
       const hasChildren = Boolean(node.children && node.children.length > 0);
       const hasImage = Boolean(node.imageUrl);
       const hasGraph = Boolean(node.graph && node.graph.fn);
@@ -322,6 +326,20 @@ export function MindmapCanvas({
     setEdges(flowEdges);
   }, [flowNodes, flowEdges, setNodes, setEdges]);
 
+  // Whenever the document/mindmap changes, orient camera smoothly focused onto the first (root) node
+  useEffect(() => {
+    if (!mindmap || flowNodes.length === 0) return;
+
+    const rootNode = flowNodes.find(n => n.id === mindmap.id) || flowNodes[0];
+    if (rootNode && rootNode.position) {
+      const timer = setTimeout(() => {
+        // Center camera smoothly onto the initial node
+        setCenter(rootNode.position.x + 130, rootNode.position.y + 30, { zoom: 0.95, duration: 400 });
+      }, 60);
+      return () => clearTimeout(timer);
+    }
+  }, [mindmap?.id, flowNodes.length, setCenter]);
+
   if (!mindmap) {
     return (
       <div className="w-full h-full flex flex-col items-center justify-center bg-slate-50 text-slate-400 select-none p-6">
@@ -347,8 +365,6 @@ export function MindmapCanvas({
         onEdgesChange={onEdgesChange}
         onPaneClick={() => onSelectNode(null)}
         nodeTypes={nodeTypes}
-        fitView
-        fitViewOptions={{ padding: 0.2 }}
         minZoom={0.2}
         maxZoom={1.5}
         proOptions={{ hideAttribution: true }}
@@ -357,5 +373,13 @@ export function MindmapCanvas({
         <Controls showInteractive={false} className="border-slate-200" />
       </ReactFlow>
     </div>
+  );
+}
+
+export function MindmapCanvas(props: MindmapCanvasProps) {
+  return (
+    <ReactFlowProvider>
+      <MindmapCanvasInner {...props} />
+    </ReactFlowProvider>
   );
 }
