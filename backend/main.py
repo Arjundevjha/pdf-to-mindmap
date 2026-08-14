@@ -12,7 +12,10 @@ from pydantic import BaseModel, Field
 import pypdf
 import httpx
 from dotenv import load_dotenv
-load_dotenv() # Load environment variables immediately on module import
+# Explicitly load backend/.env relative to this file path
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
+load_dotenv() # Fallback to CWD
+
 import fitz  # PyMuPDF
 import pytesseract
 from PIL import Image
