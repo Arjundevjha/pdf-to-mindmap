@@ -597,12 +597,34 @@ def get_auth_config():
         "supabaseKey": SUPABASE_ANON_KEY or SUPABASE_KEY
     }
 
+class AuthRequest(BaseModel):
+    email: str
+    password: Optional[str] = None
+    newPassword: Optional[str] = None
+
+@app.post("/api/auth/signin")
+async def auth_signin(payload: AuthRequest):
+    return {"status": "success", "email": payload.email.strip().lower()}
+
+@app.post("/api/auth/signup")
+async def auth_signup(payload: AuthRequest):
+    return {"status": "success", "email": payload.email.strip().lower()}
+
+@app.post("/api/auth/forgot-password")
+async def auth_forgot_password(payload: AuthRequest):
+    return {"status": "success"}
+
+@app.post("/api/auth/reset-password")
+async def auth_reset_password(payload: AuthRequest):
+    return {"status": "success"}
+
 # Document save model schema
 class DocumentSavePayload(BaseModel):
     id: str
     name: str
     data: dict
     userEmail: str
+
 
 # CRUD Endpoints for Workspace Documents
 @app.get("/api/documents")
