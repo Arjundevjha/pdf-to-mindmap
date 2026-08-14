@@ -170,22 +170,8 @@ export default function App() {
     }
   }, [activeDoc, activeDocId]);
 
-  // Auto-select root node if active document is loaded but no node selected
-  useEffect(() => {
-    if (activeDoc && activeDoc.data && !selectedNode) {
-      setSelectedNode(activeDoc.data);
-      // Auto-expand all nodes of the active document
-      const allIds = new Set<string>();
-      const collect = (n: MindmapNode) => {
-        if (n.id) allIds.add(n.id);
-        if (n.children && Array.isArray(n.children)) n.children.forEach(collect);
-      };
-      collect(activeDoc.data);
-      setExpandedIds(allIds);
-    }
-  }, [activeDoc, selectedNode]);
-
   // Persist state updates to localStorage
+
   useEffect(() => {
     if (documents.length > 0) {
       localStorage.setItem('pdf_mindmaps_docs', JSON.stringify(documents));
@@ -540,10 +526,11 @@ export default function App() {
     }
   };
 
-  // Select node to show details panel
-  const handleSelectNode = (node: MindmapNode) => {
+  // Select node to show details panel or null to close
+  const handleSelectNode = (node: MindmapNode | null) => {
     setSelectedNode(node);
   };
+
 
 
   // If not authenticated, render Login / Signup card

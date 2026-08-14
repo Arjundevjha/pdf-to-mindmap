@@ -42,7 +42,7 @@ interface FlatCustomNodeData {
   onToggleExpand: () => void;
 }
 
-// Custom node component supporting LaTeX previews, 2D Function plots, and Wikimedia images
+// Custom node component matching the clean, structured design of the application
 function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
   const isSelected = data.isSelected;
   const isRoot = data.id === 'root';
@@ -60,23 +60,25 @@ function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
 
   return (
     <div 
-      className={`relative bg-white border text-left flex flex-col select-none cursor-pointer transition-all duration-150 rounded-md shadow-sm
+      className={`relative bg-white border text-left flex flex-col select-none cursor-pointer transition-all duration-150 rounded-md shadow-xs
         ${cardWidth}
-        ${hasGraph || hasImage ? 'p-3' : hasEquations ? 'p-3 min-h-[84px]' : 'px-4 py-3 min-h-[64px] justify-between'}
-        ${isSelected ? 'border-blue-500 ring-2 ring-blue-500 shadow-md' : 'border-slate-200 hover:border-slate-300'}
+        ${hasGraph || hasImage ? 'p-3' : hasEquations ? 'p-3 min-h-[80px]' : 'px-4 py-3 min-h-[58px] justify-between'}
+        ${isSelected ? 'border-blue-500 ring-2 ring-blue-500 shadow-sm' : 'border-slate-200 hover:border-slate-300'}
       `}
       onClick={data.onSelect}
     >
-      {/* Target handle (incoming link from parent) */}
+      {/* Target handle - transparent connection point (no visible dot) */}
       <Handle 
         type="target" 
         position={Position.Left} 
         style={{ 
           visibility: isRoot ? 'hidden' : 'visible',
-          background: '#94a3b8',
-          width: '6px',
-          height: '6px',
-          left: '-3px'
+          opacity: 0,
+          width: '1px',
+          height: '1px',
+          left: '0px',
+          background: 'transparent',
+          border: 'none'
         }} 
       />
       
@@ -87,13 +89,13 @@ function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
         </div>
       )}
 
-      {/* 2. Wikimedia Educational Image Card (if no graph) */}
+      {/* 2. Educational Image Card (if no graph) */}
       {!hasGraph && hasImage && (
         <div className="mb-2.5 w-full bg-slate-100 rounded border border-slate-100 overflow-hidden flex flex-col items-center justify-center">
           <img 
             src={data.imageUrl} 
             alt={data.imageCaption || data.label}
-            className="w-full max-h-[140px] object-cover rounded-t transition-opacity duration-200"
+            className="w-full max-h-[130px] object-cover rounded-t transition-opacity duration-200"
             loading="lazy"
             onError={(e) => {
               (e.target as HTMLElement).parentElement?.classList.add('hidden');
@@ -111,15 +113,15 @@ function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
 
       {/* 3. Primary Equation Preview Badge */}
       {hasEquations && data.equations && data.equations[0] && (
-        <div className="mb-2 px-2 py-1.5 bg-slate-50 border border-slate-100 rounded flex items-center justify-center overflow-x-auto">
+        <div className="mb-2 px-2 py-1 bg-slate-50 border border-slate-100 rounded flex items-center justify-center overflow-x-auto">
           <KaTeXEquation formula={data.equations[0]} displayMode={false} className="text-xs text-slate-800" />
         </div>
       )}
 
       {/* Node Title & Expand Button */}
-      <div className="flex items-center justify-between flex-1">
-        <div className="flex-1 pr-6 py-0.5">
-          <span className="text-slate-800 text-xs font-semibold leading-normal font-sans block truncate-2-lines select-none">
+      <div className="flex items-center justify-between flex-1 gap-2">
+        <div className="flex-1 py-0.5">
+          <span className="text-slate-800 text-xs font-semibold leading-normal font-sans block select-none">
             {data.label}
           </span>
         </div>
@@ -130,7 +132,7 @@ function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
               e.stopPropagation(); 
               data.onToggleExpand(); 
             }}
-            className="absolute right-2.5 top-3 w-5 h-5 border border-slate-200 text-slate-600 flex items-center justify-center bg-slate-50 hover:bg-slate-100 text-[10px] font-bold select-none cursor-pointer focus:outline-none transition-colors rounded shadow-xs"
+            className="shrink-0 w-5 h-5 border border-slate-200 text-slate-600 flex items-center justify-center bg-slate-50 hover:bg-slate-100 text-[10px] font-bold select-none cursor-pointer focus:outline-none transition-colors rounded shadow-xs"
             aria-label={data.isExpanded ? 'Collapse node' : 'Expand node'}
           >
             {data.isExpanded ? '−' : '+'}
@@ -138,16 +140,18 @@ function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
         )}
       </div>
 
-      {/* Source handle (outgoing links to children) */}
+      {/* Source handle - transparent connection point (no visible dot) */}
       <Handle 
         type="source" 
         position={Position.Right} 
         style={{ 
           visibility: data.hasChildren && data.isExpanded ? 'visible' : 'hidden',
-          background: '#94a3b8',
-          width: '6px',
-          height: '6px',
-          right: '-3px'
+          opacity: 0,
+          width: '1px',
+          height: '1px',
+          right: '0px',
+          background: 'transparent',
+          border: 'none'
         }} 
       />
     </div>
@@ -159,7 +163,7 @@ interface MindmapCanvasProps {
   expandedIds: Set<string>;
   selectedNodeId: string | null;
   onToggleNodeExpand: (nodeId: string) => void;
-  onSelectNode: (node: MindmapNode) => void;
+  onSelectNode: (node: MindmapNode | null) => void;
 }
 
 // Synchronous Dagre layout computation for instant, synchronous placement
@@ -238,13 +242,13 @@ export function MindmapCanvas({
 
       // Compute dynamic bounding box for Dagre layout
       let width = 240;
-      let height = 64;
+      let height = 58;
       if (hasGraph || hasImage) {
         width = 270;
-        height = 210;
+        height = 200;
       } else if (hasEquations) {
         width = 260;
-        height = 96;
+        height = 84;
       }
 
       nodeList.push({
@@ -321,14 +325,14 @@ export function MindmapCanvas({
   if (!mindmap) {
     return (
       <div className="w-full h-full flex flex-col items-center justify-center bg-slate-50 text-slate-400 select-none p-6">
-        <div className="w-14 h-14 mb-4 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-400">
-          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+        <div className="w-14 h-14 mb-4 rounded-full bg-white border border-slate-200 flex items-center justify-center text-slate-400 shadow-xs">
+          <svg className="w-6 h-6 stroke-[1.5]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
           </svg>
         </div>
         <h3 className="text-sm font-semibold text-slate-700">No Mindmap Selected</h3>
         <p className="text-xs text-slate-400 mt-1 max-w-sm text-center leading-relaxed">
-          Upload a PDF from the left sidebar to generate an interactive mindmap with mathematical equations, 2D plots, and study summaries.
+          Upload a PDF or select an existing document from the left sidebar to explore the interactive visual mindmap.
         </p>
       </div>
     );
@@ -341,6 +345,7 @@ export function MindmapCanvas({
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
+        onPaneClick={() => onSelectNode(null)}
         nodeTypes={nodeTypes}
         fitView
         fitViewOptions={{ padding: 0.2 }}
@@ -348,7 +353,7 @@ export function MindmapCanvas({
         maxZoom={1.5}
         proOptions={{ hideAttribution: true }}
       >
-        <Background color="#cbd5e1" gap={20} size={1} />
+        <Background color="#e2e8f0" gap={24} size={1} />
         <Controls showInteractive={false} className="border-slate-200" />
       </ReactFlow>
     </div>
