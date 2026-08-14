@@ -1,18 +1,23 @@
 # Handoff Document
 
 ## Executive Summary
-1. **Initial Camera Orientation to First Node**:
-   - Wrapped `MindmapCanvas` with `ReactFlowProvider` and integrated `useReactFlow()`.
-   - Whenever entering a document or mounting a mindmap, the camera automatically centers and focuses smoothly onto the first (root) node (`setCenter(root.x + 130, root.y + 30, { zoom: 0.95, duration: 400 })`).
-2. **Guaranteed Node Visibility by Default**:
-   - Defaulted node expansion check so all branches and child nodes are rendered by default (`expandedIds.size === 0 || expandedIds.has(node.id)`), eliminating empty-canvas states.
-3. **Cleaned Build & Validation**:
-   - Both frontend (`tsc -b && vite build`) and backend (`py_compile`) compile with 0 errors.
+1. **Pure Rebuild of Math & Physics Completed**:
+   - Deleted `FunctionPlotter.tsx` and eliminated fragile custom JSON schema fields (`graph`, `equations`).
+   - Rebuilt `math` and `physics` system prompts in `backend/main.py` using the pure unified schema (`id`, `label`, `summary`, `children`) identical to History and Geography.
+   - All equations ($...$, $$...$$), proofs, and worked problems are embedded in the rich Markdown summary and rendered via synchronous KaTeX in the Details Drawer.
+2. **Standardized Canvas & Initial Camera Orientation**:
+   - `MindmapCanvas.tsx` standardizes on uniform 240px card dimensions with transparent connection handles (zero dot artifacts).
+   - Integrated `useReactFlow()` and `<ReactFlowProvider>` so the camera smoothly centers directly on the first (root) node at 100% zoom upon entering any document.
+   - All nodes are expanded by default (`expandedIds.size === 0 || expandedIds.has(node.id)`).
+3. **End-to-End Verified via `agent-browser`**:
+   - Tested on user PDF `/Users/abc/Desktop/e488bdd2a0d84c639020eb5967762805.pdf`.
+   - Verified clean tree rendering, camera centering, drawer open/close `X` behavior, and KaTeX math formatting.
 
 ## Active State of Codebase Files
-- [`frontend/src/components/MindmapCanvas.tsx`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/frontend/src/components/MindmapCanvas.tsx): ReactFlowProvider, initial camera orientation on root node, fallback expansion, transparent handles.
-- [`frontend/src/App.tsx`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/frontend/src/App.tsx): Accessible document list buttons, persistent storage, responsive side drawer.
-- [`backend/main.py`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/backend/main.py): In-depth STEM prompts, `sanitize_json_latex` JSON parser, native digital PDF extraction priority.
+- [`backend/main.py`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/backend/main.py): In-depth STEM prompts with pure unified schema, `sanitize_json_latex` JSON parser, native digital PDF extraction priority.
+- [`frontend/src/components/MindmapCanvas.tsx`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/frontend/src/components/MindmapCanvas.tsx): ReactFlowProvider, initial camera orientation on root node, uniform 240px card layout, transparent handles.
+- [`frontend/src/components/MathRenderer.tsx`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/frontend/src/components/MathRenderer.tsx): Synchronous KaTeX math and Markdown renderer.
+- [`frontend/src/App.tsx`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/frontend/src/App.tsx): Clean drawer closing, seamless document persistence, accessible document list.
 
 ## Immediate Next Steps
-- User verification on `http://localhost:5173`.
+- Application is live and verified on `http://localhost:5173`.
