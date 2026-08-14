@@ -189,14 +189,29 @@ def clean_json_string(response_text: str) -> str:
         
     return response_text.strip()
 
-def repair_and_parse_json(response_text: str) -> dict:
+def sanitize_json_latex(s: str) -> str:
+    """
+    Escapes unescaped LaTeX backslashes inside JSON strings so json.loads
+    does not fail or corrupt LaTeX commands into ASCII control characters.
+    """
+    # 1. Escape unescaped backslashes before LaTeX macro names that are not standard JSON escapes
+    s = re.sub(r"(?<!\\)\\(?![\"\\/bfnrtu])([a-zA-Z]+)", r"\\\\\1", s)
+    
+    # 2. Specifically fix LaTeX keywords that start with JSON escape letters (f, t, b, r, n)
+    latex_keywords = ["frac", "theta", "times", "tau", "text", "tan", "to", "beta", "bar", "binom", "bullet", "rho", "right", "rangle", "root", "nu", "neq", "nabla", "degree"]
+    for kw in latex_keywords:
+        s = re.sub(r"(?<!\\)\\" + kw + r"\b", r"\\\\" + kw, s)
+        
+    return s
 
+def repair_and_parse_json(response_text: str) -> dict:
     """
     Cleans, repairs, and parses LLM JSON responses into a Python dict.
     If the response was truncated mid-sentence or mid-object, it auto-repairs
     unclosed strings, quotes, arrays, and braces so mindmap generation never crashes.
     """
     cleaned = clean_json_string(response_text)
+    cleaned = sanitize_json_latex(cleaned)
     
     # 1. Try direct parsing first
     try:
@@ -253,6 +268,7 @@ def repair_and_parse_json(response_text: str) -> dict:
             return data
     except Exception as e:
         logger.warning(f"JSON auto-repair parsing warning: {str(e)}")
+
 
     # 3. Fallback string extraction for label and summary if parsing fails
     label_match = re.search(r'"label"\s*:\s*"([^"]+)"', cleaned)
