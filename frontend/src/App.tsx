@@ -346,8 +346,19 @@ export default function App() {
     // Update local state for instant user feedback
     setDocuments(prev => [newDoc, ...prev]);
     setActiveDocId(newDoc.id);
-    setExpandedIds(new Set(['root'])); // reset to just showing root node
-    setSelectedNode(null);
+
+    // Auto-expand all nodes across the canvas so the user immediately sees the entire mindmap
+    const allNodeIds = new Set<string>();
+    const collectIds = (n: MindmapNode) => {
+      if (n.id) allNodeIds.add(n.id);
+      if (n.children && Array.isArray(n.children)) {
+        n.children.forEach(collectIds);
+      }
+    };
+    collectIds(mindmapData);
+
+    setExpandedIds(allNodeIds);
+    setSelectedNode(mindmapData); // Auto-open Details Panel for the root node
     setUndoHistory([]);
 
     // Background sync to database
@@ -371,20 +382,35 @@ export default function App() {
         toast.success("Mindmap generated and synced to cloud.");
       } catch (err) {
         console.error("Error syncing new document to database:", err);
-        toast.warning("Mindmap created, but failed to sync to cloud. It is saved locally.");
+        toast.info("Mindmap created and saved locally in browser.");
       }
     } else {
-      toast.success("Mindmap generated successfully (local-only).");
+      toast.success("Mindmap generated successfully.");
     }
   };
 
   // Switch between documents
   const handleSelectDocument = (docId: string) => {
     setActiveDocId(docId);
-    setExpandedIds(new Set(['root']));
-    setSelectedNode(null);
+    const targetDoc = userDocuments.find(d => d.id === docId);
+    if (targetDoc && targetDoc.data) {
+      const allIds = new Set<string>();
+      const collect = (n: MindmapNode) => {
+        if (n.id) allIds.add(n.id);
+        if (n.children && Array.isArray(n.children)) {
+          n.children.forEach(collect);
+        }
+      };
+      collect(targetDoc.data);
+      setExpandedIds(allIds);
+      setSelectedNode(targetDoc.data);
+    } else {
+      setExpandedIds(new Set(['root']));
+      setSelectedNode(null);
+    }
     setUndoHistory([]);
   };
+
 
   // Delete a document
   const handleDeleteDocument = async (docId: string, e: React.MouseEvent) => {

@@ -433,14 +433,15 @@ Output ONLY a single valid JSON object strictly matching this schema:
 
     elif subject == "physics":
         return """You are an elite Physics Educator and STEM visualization architect.
-Your objective is to analyze the physics text and convert it into a rigorous, intuitive mindmap.
+Your objective is to analyze the physics text and convert it into a rich, hierarchical, visual mindmap.
 
 CRITICAL PHYSICS RULES:
 1. LaTeX Equations with SI Units: Every physical law, kinematics equation, or field formula MUST use standard LaTeX ($inline$ and $$block$$) accompanied by SI units (e.g., $m/s^2$, $N$, $J$, $W$, $V$, $\\Omega$).
 2. Plain-English Intuition: Connect every equation to physical reality (cause, effect, conservation laws).
 3. Physics Curves & Dynamics: Whenever a node discusses a physical curve (e.g. projectile trajectory $-0.5*9.8*x^2 + 20*x$, harmonic oscillation $\\sin(x)$, exponential decay $\\exp(-x)$, velocity-time curves), provide a "graph" object with standard expression in 'x' and domain.
 4. Equations Field: Include an "equations" array containing top LaTeX formulas for the concept. If purely conceptual without formulas, omit or set to [].
-5. Summary Structure: The "summary" string MUST follow these clean sections (only include Equations and Graph sections if applicable):
+5. MANDATORY HIERARCHY: You MUST break down the document into 3 to 6 distinct child nodes representing core subtopics, laws, and components. NEVER output an empty "children" array when the text covers multiple concepts.
+6. Summary Structure: The "summary" string MUST follow these clean sections (only include Equations and Graph sections if applicable):
    ### Core Concept
    - **Physical Principle**: [1-2 sentence intuition of the law or physical mechanism]
    - **Underlying Mechanism**: [Force interaction, energy transfer, or molecular process]
@@ -456,21 +457,38 @@ CRITICAL PHYSICS RULES:
    - **Experimental Setup & Application**: [Real-world engineering, laboratory setup, or everyday physical phenomenon with concrete values]
 
 JSON OUTPUT SCHEMA:
-Output ONLY a single valid JSON object matching this schema:
+Output ONLY a single valid JSON object strictly matching this schema:
 {
   "id": "root",
-  "label": "Physics Concept (3-5 words)",
-  "equations": ["F = m a", "v = u + a t"],
+  "label": "Central Physics Topic (3-5 words)",
+  "equations": ["F_{net} = m a", "W = F d \\\\cos(\\\\theta)"],
   "graph": {
     "fn": "-0.5 * 9.81 * x^2 + 20 * x",
-    "domain": [0, 4.2],
+    "domain": [0, 4.1],
     "xLabel": "Time t (s)",
     "yLabel": "Height y (m)",
     "title": "Projectile Trajectory"
   },
-  "summary": "### Core Concept\\n- **Physical Principle**: [Intuition]\\n\\n### Equations & Variables\\n- **Governing Law**: $$F = m a$$\\n- **Variables**: $m$ (mass, kg), $a$ (acceleration, $m/s^2$).\\n\\n### Physical Meaning & Application\\n- **Application**: Rocket propulsion and collision safety.",
-  "children": []
+  "summary": "### Core Concept\\n- **Physical Principle**: Motion and energy governing particle dynamics.\\n- **Underlying Mechanism**: Force vectors determine rate of momentum change.\\n\\n### Equations & Variables\\n- **Governing Law**: $$F = m a$$\\n- **Variable Definitions & Units**: $F$ (force, $N$), $m$ (mass, $kg$), $a$ (acceleration, $m/s^2$).\\n\\n### Physical Meaning & Application\\n- **Experimental Setup & Application**: Classical mechanics modeling in aerospace.",
+  "children": [
+    {
+      "id": "child-1",
+      "label": "Kinematics & Velocity",
+      "equations": ["v = u + a t", "s = u t + \\\\frac{1}{2} a t^2"],
+      "graph": { "fn": "2 * x + 5", "domain": [0, 10], "xLabel": "Time t (s)", "yLabel": "Velocity v (m/s)", "title": "Linear Acceleration v(t)" },
+      "summary": "### Core Concept\\n- **Physical Principle**: Uniform acceleration.\\n- **Underlying Mechanism**: Constant rate of change in velocity.\\n\\n### Equations & Variables\\n- **Governing Law**: $$v = u + a t$$\\n- **Variable Definitions & Units**: $v$ (final velocity, $m/s$), $u$ (initial velocity, $m/s$), $a$ (acceleration, $m/s^2$), $t$ (time, $s$).\\n\\n### Physical Meaning & Application\\n- **Experimental Setup & Application**: Braking distances in transportation safety.",
+      "children": []
+    },
+    {
+      "id": "child-2",
+      "label": "Work & Kinetic Energy",
+      "equations": ["E_k = \\\\frac{1}{2} m v^2"],
+      "summary": "### Core Concept\\n- **Physical Principle**: Energy conservation during mechanical work.\\n- **Underlying Mechanism**: Work done equals change in kinetic energy.\\n\\n### Equations & Variables\\n- **Governing Law**: $$E_k = \\\\frac{1}{2} m v^2$$\\n- **Variable Definitions & Units**: $E_k$ (kinetic energy, $J$), $m$ (mass, $kg$), $v$ (speed, $m/s$).\\n\\n### Physical Meaning & Application\\n- **Experimental Setup & Application**: Rollercoaster track design and hydro-turbines.",
+      "children": []
+    }
+  ]
 }"""
+
 
     elif subject == "history":
         return """You are an expert historian and educational mindmap designer.
