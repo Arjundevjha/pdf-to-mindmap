@@ -804,11 +804,9 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
     
     ALL_FREE_TIER_MODELS = [
         "llama-3.3-70b-versatile",
-        "deepseek-r1-distill-llama-70b",
-        "mixtral-8x7b-32768",
-        "gemma2-9b-it",
-        "llama3-70b-8192",
-        "llama3-8b-8192",
+        "llama-3.1-8b-instant",
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
     ]
 
     primary_model = selected_model
@@ -816,7 +814,7 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
     
     if selected_model == "auto-smart-routing":
         is_routed = True
-        primary_model = "llama-3.3-70b-versatile" if word_count >= 1200 else "mixtral-8x7b-32768"
+        primary_model = "llama-3.3-70b-versatile" if word_count >= 1200 else "llama-3.1-8b-instant"
 
 
     # Distribute initial models across all available free tier models if routed, or use primary model
@@ -829,7 +827,7 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
 
     # Track last request time per model to space out requests and avoid rate limits
     model_last_request: dict[str, float] = {}
-    MIN_REQUEST_INTERVAL = 2.5  # seconds between requests to same model
+    MIN_REQUEST_INTERVAL = 1.5  # seconds between requests to same model
 
     unique_models_used = list(dict.fromkeys(chunk_models))
     models_used_str = ", ".join(unique_models_used)
@@ -857,12 +855,14 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
                     await asyncio.sleep(wait_time)
             model_last_request[current_model] = time.monotonic()
 
-            use_json_mode = True
+            # Models like Llama-3 support json_object mode; OSS models prefer standard prompt mode
+            use_json_mode = "llama" in current_model.lower()
 
             for attempt in range(2):
                 try:
-                    # 8B and Gemma models have strict 6,000-15,000 TPM limits on free tier. Cap max_tokens to 1500 for 8B models.
-                    max_tokens = 1500 if ("8b" in current_model.lower() or "gemma" in current_model.lower()) else 4096
+                    # Groq free tier reserves prompt_tokens + max_tokens against TPM limit (6,000 TPM for 70B, 30,000 TPM for 8B)
+                    # Capping max_tokens to 2200 prevents 429 TPM reservation errors
+                    max_tokens = 2000 if "8b" in current_model.lower() else 2400
                     data = {
                         "model": current_model,
                         "messages": [
@@ -876,7 +876,7 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
                         data["response_format"] = {"type": "json_object"}
 
                     logger.info(f"Sending Groq API request for Chunk {index+1} using model: '{current_model}' (max_tokens={max_tokens}, Attempt {attempt+1})")
-                    resp = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data)
+                    resp = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data, timeout=40.0)
 
                     # On Rate Limit (429) or Payload/TPM Limit (413): switch to NEXT fallback model immediately
                     if resp.status_code in [413, 429]:
@@ -891,7 +891,7 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
                             logger.warning(f"JSON mode validation failed on model '{current_model}'. Retrying with standard text mode...")
                             use_json_mode = False
                             continue
-                        logger.warning(f"Groq API error status {resp.status_code} on model '{current_model}' for Chunk {index+1}. Switching to fallback model...")
+                        logger.warning(f"Groq API error status {resp.status_code} ({resp.text[:120]}) on model '{current_model}' for Chunk {index+1}. Switching to fallback model...")
                         break
 
                     resp_json = resp.json()
@@ -908,6 +908,7 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
                     logger.warning(f"Error on model '{current_model}' for Chunk {index+1}: {str(exc)}. Retrying/falling back...")
                     await asyncio.sleep(0.5)
                     break
+
 
 
         # Emergency Fallback Node: If every single model fails, construct a clean fallback sub-mindmap node
