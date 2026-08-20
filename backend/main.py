@@ -463,10 +463,12 @@ CRITICAL MATHEMATICAL & TOPOLOGY RULES:
    - NEVER cut short, compress, or omit mathematical steps, intermediate algebra, derivations, proofs, boundary conditions, or worked calculations.
    - Thoroughly explain underlying derivations, geometric intuition, algebraic conditions (e.g. domain restrictions, discriminant $\\Delta = b^2 - 4ac$, asymptotes, boundary cases), and step-by-step calculation workflows from the text.
    - Include complete concrete numerical worked examples showing every intermediate algebraic step and substitution.
-3. LaTeX Formula Standard (MANDATORY DELIMITERS):
+3. LaTeX Formula Standard (MANDATORY DELIMITERS & PURITY):
    - Every formula, equation, rule, function, variable, derivative, and operator MUST be wrapped in standard dollar-sign LaTeX delimiters:
      * Inline expressions: $f(x) = a^x$, $a > 1$, $0 < a < 1$, $a^x = e^{x\\ln a}$, $\\frac{d}{dx}[a^x] = a^x\\ln a$, $e^{rt}$, $\\to$, $\\log_a(x/y) = \\log_a x - \\log_a y$, $\\int_a^b f(x)dx$, $\\Delta = b^2 - 4ac$
      * Block display equations: $$\\log_a\\left(\\frac{x}{y}\\right) = \\log_a x - \\log_a y$$ or $$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$
+   - STRICT DELIMITER PURITY RULE:
+     * NEVER put English sentences, commentary, or step descriptions inside '$$ ... $$' or '$ ... $'. Mathematical blocks must ONLY contain pure LaTeX syntax. English commentary must be written outside math delimiters as regular markdown text (e.g. write 'Take square roots and solve for $x$:\n$$x = \\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}$$').
    - STRICT FORBIDDEN PATTERNS:
      * NEVER wrap math formulas in regular parentheses like '(f(x)=a^x)' or '((e^{rt}))' or '(a>1)' — ALWAYS write '$f(x)=a^x$', '$e^{rt}$', '$a>1$'.
      * NEVER leave raw LaTeX commands like '\\to', '\\frac', '\\ln' without '$' delimiters — ALWAYS write '$\\to$', '$\\frac{...}{...}$', '$\\ln a$'.

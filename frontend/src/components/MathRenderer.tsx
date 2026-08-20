@@ -24,6 +24,9 @@ export function prepareMathInput(raw: string): string {
   if (!raw) return '';
   let s = raw;
 
+  // 0. Repair step markers like {1}:, {2}:, [1]:, (1):
+  s = s.replace(/(?:^|\n)\s*[\{\[\(](\d+)[\}\]\)]\s*:\s*/gm, '\n- **Step $1**: ');
+
   // 1. Repair ASCII control characters corrupted by JSON decoders
   s = s
     .replace(/\x0c/g, '\\f') // Formfeed to \f (e.g. \frac)
@@ -60,19 +63,63 @@ export function prepareMathInput(raw: string): string {
     .replace(/\\degree/g, '^{\\circ}')
     .replace(/°/g, '^{\\circ}');
 
-  // 4. Fix bracket sizing macros (\biglx -> \bigl(x, \biglc -> \bigl(c, \bigr^2 -> \bigr)^2, \bigr$$ -> \bigr)$$)
+  // 4. Fix unparenthesized linear+fraction expressions before exponents (e.g. x+\frac{b}{2a}^2 -> \left(x+\frac{b}{2a}\right)^2)
+  s = s.replace(/((?:[a-zA-Z0-9]|\\[a-zA-Z]+)\s*[+-]\s*\\frac\{[^{}]*\}\{[^{}]*\})\s*\^(\d+|\{[^{}]*\})/g, '\\left($1\\right)^$2');
+
+  // 5. Fix bracket sizing macros (\biglx -> \bigl(x, \biglc -> \bigl(c, \bigr^2 -> \bigr)^2, \bigr$$ -> \bigr)$$)
   s = s.replace(/\\(bigl|Bigl|biggl|Biggl|left)\s*([a-zA-Z0-9])/g, (_, p1, p2) => `\\${p1}(${p2}`);
   s = s.replace(/\\(bigl|Bigl|biggl|Biggl|left)(?=[^(\[{|.\s]|$)/g, (_, p1) => `\\${p1}(`);
   s = s.replace(/\\(bigr|Bigr|biggr|Biggr|right)\s*(?=[\^+\-*=,;:]|\$\$|\$|\s|[a-zA-Z0-9]|$)/g, (_, p1) => `\\${p1})`);
   s = s.replace(/\\(bigr|Bigr|biggr|Biggr|right)(?=[^)\\]}|.\s]|$)/g, (_, p1) => `\\${p1})`);
 
-  // 5. Repair trailing unbalanced $$ (e.g. "ax^2 + bx + c to a\bigl(x + \frac{b}{2a}\bigr)^2 + \bigl(c - \frac{b^2}{4a}\bigr)$$ to find vertex")
+  // 6. Split and extract English sentences embedded inside $$...$$ blocks
+  s = s.replace(/\$\$([\s\S]+?)\$\$/g, (_, inner) => {
+    let trailingPunct = '';
+    const punctMatch = inner.match(/([.,;:!?]+)$/);
+    if (punctMatch) {
+      trailingPunct = punctMatch[1];
+      inner = inner.slice(0, -trailingPunct.length);
+    }
+
+    const textSplitter = /(Takesquarerootsandsolveforx:?|[A-Za-z]{10,}:?|[A-Za-z]+(?:\s+[A-Za-z]+){2,}:?|(?:Completing\s+the\s+square|solving\s+for|to\s+find|and\s+solve|yielding|giving|where)\s*:?)/i;
+
+    if (textSplitter.test(inner)) {
+      const parts = inner.split(textSplitter);
+      let out = '';
+      for (const part of parts) {
+        if (!part) continue;
+        const trimmed = part.trim();
+        if (!trimmed) continue;
+
+        const isEnglish = (
+          /Takesquarerootsandsolveforx/i.test(trimmed) ||
+          (/^[A-Za-z\s:,;!?-]+$/.test(trimmed) && !/^\\[a-zA-Z]+$/.test(trimmed) && trimmed.length > 5) ||
+          /^(Completing|solving|to|and|yielding|giving|where)/i.test(trimmed)
+        );
+
+        if (isEnglish) {
+          let textPhrase = trimmed;
+          if (/Takesquarerootsandsolveforx/i.test(trimmed)) {
+            textPhrase = 'Take square roots and solve for $x$:';
+          }
+          out += `\n\n${textPhrase}\n\n`;
+        } else {
+          out += `$$${trimmed}$$`;
+        }
+      }
+      return out + trailingPunct;
+    }
+
+    return `$$${inner}$$${trailingPunct}`;
+  });
+
+  // 7. Repair trailing unbalanced $$ (e.g. "ax^2 + bx + c to a\bigl(x + \frac{b}{2a}\bigr)^2 + \bigl(c - \frac{b^2}{4a}\bigr)$$ to find vertex")
   s = s.replace(/(?:^|(?<=[:\n\r\t]|\s{2,}))\s*([^$\n\r]+?)\$\$/gm, (_, expr) => {
     const clean = expr.trim().replace(/(?<=[a-zA-Z0-9)\]^_}])\s+to\s+(?=[a-zA-Z0-9(\[\\])/g, ' \\to ');
     return `$${clean}$`;
   });
 
-  // 6. Convert parenthesized math expressions like (f(x)=a^{x}), ((e^{rt})), (a>1), (0<a<1)
+  // 8. Convert parenthesized math expressions like (f(x)=a^{x}), ((e^{rt})), (a>1), (0<a<1)
   // Ensure we DO NOT match parentheses that are preceded by \bigl, \left, etc.
   s = s.replace(/(?<!\\[a-zA-Z]+)\(\(\s*([^()]+?)\s*\)\)/g, (match, inner) => {
     const isMath = /[_^\\/+\-*=<>~]|\b(e|x|y|a|b|c|t|n|k|i|pi|theta|ln|log|exp)\b/i.test(inner);
