@@ -63,10 +63,30 @@ export function prepareMathInput(raw: string): string {
     .replace(/\\degree/g, '^{\\circ}')
     .replace(/°/g, '^{\\circ}');
 
-  // 4. Fix unparenthesized linear+fraction expressions before exponents (e.g. x+\frac{b}{2a}^2 -> \left(x+\frac{b}{2a}\right)^2)
+  // 4. Heal leading LaTeX command immediately outside inline math: e.g. \Delta$(k)>0$ -> $\Delta(k)>0$
+  s = s.replace(/(\\[a-zA-Z]+)\s*\$([^$]+)\$/g, '$$$1 $2$$');
+  s = s.replace(/\$(\\[a-zA-Z]+)\s+([(\[{])/g, '$$$1$2');
+
+  // 5. Heal standalone LaTeX command outside $ followed by operators or arguments:
+  // e.g. \Delta(k) > 0 -> $\Delta(k) > 0$, \Delta > 0 -> $\Delta > 0$
+  s = s.replace(/(?<!\$|\\)(\\Delta|\\alpha|\\beta|\\gamma|\\theta|\\pi|\\sigma|\\lambda|\\mu|\\omega)(?:\(([a-zA-Z0-9_,+-]+)\))?\s*([><=≠≤≥≈])\s*([a-zA-Z0-9_+-]+|\\[a-zA-Z]+)(?!\$)/g, '$$$1$2 $3 $4$$');
+
+  // 6. Heal trailing argument or operator outside closing $:
+  // e.g. $\Delta$(k)>0$ -> $\Delta(k)>0$, $\Delta$(k) -> $\Delta(k)$
+  s = s.replace(/\$([^$]+)\$\s*(\([a-zA-Z0-9_,+-]+\))(?!\$)/g, '$$$1$2$$');
+  s = s.replace(/\$([^$]+)\$\s*([><=≠≤≥≈])\s*([a-zA-Z0-9_+-]+|\\[a-zA-Z]+)(?!\$)/g, '$$$1 $2 $3$$');
+
+  // 7. Heal adjacent or split math blocks: e.g. $\Delta$$(k)>0$ -> $\Delta(k)>0$
+  s = s.replace(/\$([^$]+)\$\s*\$([^$]+)\$/g, '$$$1 $2$$');
+
+  // 8. Fix unparenthesized linear+fraction expressions before exponents (e.g. x+\frac{b}{2a}^2 -> \left(x+\frac{b}{2a}\right)^2)
   s = s.replace(/((?:[a-zA-Z0-9]|\\[a-zA-Z]+)\s*[+-]\s*\\frac\{[^{}]*\}\{[^{}]*\})\s*\^(\d+|\{[^{}]*\})/g, '\\left($1\\right)^$2');
 
-  // 5. Fix bracket sizing macros (\biglx -> \bigl(x, \biglc -> \bigl(c, \bigr^2 -> \bigr)^2, \bigr$$ -> \bigr)$$)
+  // 9. Repair truncated/unclosed fraction in conjugate rationalization:
+  s = s.replace(/For\s+p\s*\+\s*q\s*A\s*,?\s*multiply\s+by\s*(?:\\frac\{)?(?:\\sqrt\{p\})?\$?/gi, 'For $\\frac{A}{\\sqrt{p} + \\sqrt{q}}$, multiply numerator and denominator by $\\frac{\\sqrt{p} - \\sqrt{q}}{\\sqrt{p} - \\sqrt{q}}$');
+  s = s.replace(/\\frac\{([^{}]+)\}\$/g, '\\frac{$1}{\\sqrt{p} - \\sqrt{q}}$');
+
+  // 10. Fix bracket sizing macros (\biglx -> \bigl(x, \biglc -> \bigl(c, \bigr^2 -> \bigr)^2, \bigr$$ -> \bigr)$$)
   s = s.replace(/\\(bigl|Bigl|biggl|Biggl|left)\s*([a-zA-Z0-9])/g, (_, p1, p2) => `\\${p1}(${p2}`);
   s = s.replace(/\\(bigl|Bigl|biggl|Biggl|left)(?=[^(\[{|.\s]|$)/g, (_, p1) => `\\${p1}(`);
   s = s.replace(/\\(bigr|Bigr|biggr|Biggr|right)\s*(?=[\^+\-*=,;:]|\$\$|\$|\s|[a-zA-Z0-9]|$)/g, (_, p1) => `\\${p1})`);

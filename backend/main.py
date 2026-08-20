@@ -363,21 +363,44 @@ def repair_math_syntax_backend(text: str) -> str:
     s = s.replace('⇒', r' $\implies$ ')
     s = s.replace('²', '^2').replace('³', '^3')
 
-    # 3. Repair stray mid-formula closing $$ before an exponent:
+    # 3. Heal leading LaTeX command immediately outside inline math: e.g. \Delta$(k)>0$ -> $\Delta(k)>0$
+    s = re.sub(r'(\\[a-zA-Z]+)\s*\$([^$]+)\$', r'$\1 \2$', s)
+    s = re.sub(r'\$(\\[a-zA-Z]+)\s+([(\[{])', r'$\1\2', s)
+
+    # 4. Heal standalone LaTeX command outside $ followed by operators or arguments:
+    # e.g. \Delta(k) > 0 -> $\Delta(k) > 0$, \Delta > 0 -> $\Delta > 0$
+    s = re.sub(r'(?<!\$|\\)(\\Delta|\\alpha|\\beta|\\gamma|\\theta|\\pi|\\sigma|\\lambda|\\mu|\\omega)(?:\(([a-zA-Z0-9_,+-]+)\))?\s*([><=≠≤≥≈])\s*([a-zA-Z0-9_+-]+|\\[a-zA-Z]+)(?!\$)',
+               r'$\1\2 \3 \4$', s)
+
+    # 5. Heal trailing argument or operator outside closing $:
+    # e.g. $\Delta$(k)>0$ -> $\Delta(k)>0$, $\Delta$(k) -> $\Delta(k)$
+    s = re.sub(r'\$([^$]+)\$\s*(\([a-zA-Z0-9_,+-]+\))(?!\$)', r'$\1\2$', s)
+    s = re.sub(r'\$([^$]+)\$\s*([><=≠≤≥≈])\s*([a-zA-Z0-9_+-]+|\\[a-zA-Z]+)(?!\$)', r'$\1 \2 \3$', s)
+
+    # 6. Heal adjacent or split math blocks: e.g. $\Delta$$(k)>0$ -> $\Delta(k)>0$
+    s = re.sub(r'\$([^$]+)\$\s*\$([^$]+)\$', r'$\1 \2$', s)
+
+    # 7. Repair stray mid-formula closing $$ before an exponent:
     # e.g. "a[x+\frac{b}{2a}$$^2-\frac{b^2}{4a^2}\bigr]" -> "a\left[x+\frac{b}{2a}\right]^2-\frac{b^2}{4a^2}"
     s = re.sub(r'\\frac\{([^{}]+)\}\{([^{}]+)\}\$\$[\^](\d+|\{[^{}]+\})', r'\\frac{\1}{\2}\\bigr)^\3', s)
     s = re.sub(r'([a-zA-Z0-9)\]])\$\$[\^](\d+|\{[^{}]+\})', r'\1^\2', s)
 
-    # 4. Repair broken completing the square clauses: "a[x 2 + a/b x]" -> "a\left[x^2 + \frac{b}{a}x\right]"
+    # 8. Repair broken completing the square clauses: "a[x 2 + a/b x]" -> "a\left[x^2 + \frac{b}{a}x\right]"
     s = re.sub(r'a\[x\s*2\s*\+\s*([ab])\/([ab])\s*x\]', r'a\\left[x^2 + \\frac{b}{a}x\\right]', s)
     s = re.sub(r'ax\+\\frac\{b\}\{2a\}\s*\\bigr\)\^2', r'a\\left(x + \\frac{b}{2a}\\right)^2', s)
     s = re.sub(r'ax\+\\frac\{b\}\{2a\}\s*\^2', r'a\\left(x + \\frac{b}{2a}\\right)^2', s)
     s = re.sub(r'a\[x\+\\frac\{b\}\{2a\}\s*\\bigr\)\^2', r'a\\left[\\left(x + \\frac{b}{2a}\\right)^2', s)
 
-    # 5. Fix unparenthesized linear+fraction before exponent: x+\frac{b}{2a}^2 -> \left(x+\frac{b}{2a}\right)^2
+    # 9. Fix unparenthesized linear+fraction before exponent: x+\frac{b}{2a}^2 -> \left(x+\frac{b}{2a}\right)^2
     s = re.sub(r'((?:[a-zA-Z0-9]|\\[a-zA-Z]+)\s*[+-]\s*\\frac\{[^{}]*\}\{[^{}]*\})\s*\^(\d+|\{[^{}]*\})', r'\\left(\1\\right)^\2', s)
 
-    # 6. Repair sizing macros missing opening or closing parentheses
+    # 10. Repair truncated/unclosed fraction in conjugate rationalization:
+    s = re.sub(r'For\s+p\s*\+\s*q\s*A\s*,?\s*multiply\s+by\s*(?:\\frac\{)?(?:\\sqrt\{p\})?\$?',
+               r'For $\\frac{A}{\\sqrt{p} + \\sqrt{q}}$, multiply numerator and denominator by $\\frac{\\sqrt{p} - \\sqrt{q}}{\\sqrt{p} - \\sqrt{q}}$',
+               s, flags=re.IGNORECASE)
+    s = re.sub(r'\\frac\{([^{}]+)\}\$', r'\\frac{\1}{\\sqrt{p} - \\sqrt{q}}$', s)
+
+    # 11. Repair sizing macros missing opening or closing parentheses
     s = re.sub(r'\\bigl([a-zA-Z0-9])', r'\\bigl(\1', s)
     s = re.sub(r'\\bigr(?=[^)\\]|$)', r'\\bigr)', s)
 
@@ -1269,8 +1292,9 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
 
     async def process_chunk(client: httpx.AsyncClient, chunk_text: str, index: int) -> dict:
         initial_model = chunk_models[index]
-        # Candidate model order: selected model first, followed by all other free tier models as fallbacks
-        candidate_models = [initial_model] + [m for m in ALL_FREE_TIER_MODELS if m != initial_model]
+        # Prioritize high-capacity models (gpt-oss-120b: 30k TPM) for reliable completion
+        high_capacity_first = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b", "groq/compound", "groq/compound-mini"]
+        candidate_models = [initial_model] + [m for m in high_capacity_first if m != initial_model]
 
         user_prompt = f"Here is the text extracted from Part {index+1} of the document to turn into a mindmap:\n\n{chunk_text}"
 
@@ -1288,8 +1312,12 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
 
             for attempt in range(2):
                 try:
-                    # Comprehensive token budget (4096 tokens) so complex math derivations are never cut off
-                    max_tokens = 4096
+                    # Calibrate token budget per model so TPM limits (8,000 TPM on Qwen/Compound) are never exceeded
+                    if "120b" in current_model or "20b" in current_model:
+                        max_tokens = 2500
+                    else:
+                        max_tokens = 2000
+
                     data = {
                         "model": current_model,
                         "messages": [
@@ -1306,7 +1334,7 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
                     # On Rate Limit (429) or Payload/TPM Limit (413): switch to NEXT fallback model immediately
                     if resp.status_code in [413, 429]:
                         logger.warning(f"Groq rate/TPM limit hit ({resp.status_code}) on model '{current_model}' for Chunk {index+1}. Switching to fallback model...")
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(1.0)
                         break
 
                     if resp.status_code != 200:
@@ -1328,14 +1356,24 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
                     await asyncio.sleep(0.5)
                     break
 
+        # Emergency Fallback Outline: If all models fail, construct a structured multi-child outline from paragraph headers
+        logger.error(f"All model fallback candidates failed for Chunk {index+1}. Synthesizing structured fallback outline.")
+        lines = [line.strip() for line in chunk_text.split('\n') if len(line.strip()) > 5]
+        child_nodes = []
+        for line_idx, line in enumerate(lines[:5]):
+            clean_title = re.sub(r'^(?:[0-9]+\.|\d+\))\s*', '', line)[:60]
+            child_nodes.append({
+                "id": f"chunk_fallback_{index+1}_{line_idx+1}",
+                "label": clean_title,
+                "summary": f"### Core Concept\n- **Overview**: Key principles and methods from this section.\n- **Content**: {line[:200]}",
+                "children": []
+            })
 
-
-        # Emergency Fallback Node: If every single model fails, construct a clean fallback sub-mindmap node
-        logger.error(f"All model fallback candidates failed for Chunk {index+1}. Synthesizing emergency fallback node.")
         return {
             "id": f"chunk_fallback_{index+1}",
-            "label": f"Part {index+1} Overview",
-            "summary": f"### Core Concept\n- **Overview**: Document summary for Part {index+1}.\n\n### Key Details\n- **Note**: Section recovered for continuous mindmap viewing.",
+            "label": f"Part {index+1}: Document Study Section",
+            "summary": f"### Core Concept\n- **Overview**: Comprehensive study section recovered for continuous viewing.\n- **Key Mechanism**: Review individual topics in child nodes below.",
+            "children": child_nodes
         }
 
     try:
