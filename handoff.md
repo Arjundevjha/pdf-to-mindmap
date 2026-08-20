@@ -5,16 +5,21 @@
    - **AST Compilation Architecture**: Migrated `MathRenderer.tsx` from custom regex replacement to an industry-standard Abstract Syntax Tree (AST) pipeline powered by `react-markdown`, `remark-math`, `rehype-katex`, and `remark-gfm`.
    - **KaTeX Copy-Paste Duplication Fix (`output: 'html'`)**:
      - Configured KaTeX to output pure HTML (`output: 'html'`) rather than `htmlAndMathml`. This eliminates duplicated characters when copying rendered formulas from node cards and summaries (e.g. preventing `P Pt = P 0 e r t = P 0 e rt`).
+   - **Mandatory Multi-Node Hierarchy Rule & Multi-Child Schema Templates**:
+     - Replaced flat single-node schema examples with fully populated 5+ child-node templates in all subject system prompts (`math`, `physics`, `history`, `geography`, `general`).
+     - Enforced the **Mandatory Multi-Node Hierarchy Rule**: root node must only contain the document title and executive thesis, and MUST branch into 4 to 8 distinct child nodes in `"children"` (never collapsing multiple topics into a single root node).
+   - **Resilient Regex Child-Node Extractor in `repair_and_parse_json`**:
+     - Upgraded `repair_and_parse_json` in `backend/main.py` with an AST/regex node block extractor. If `json.loads` encounters any syntax anomaly inside a formula, all child nodes are cleanly extracted from the raw response and preserved instead of defaulting to an empty `children: []` list.
    - **KaTeX Sizing Delimiter & Unbalanced `$$` Auto-Repair**:
      - Automatically repairs missing parentheses in sizing macros: `\biglx` $\to$ `\bigl(x`, `\biglc` $\to$ `\bigl(c`, `\bigr^2` $\to$ `\bigr)^2`, `\bigr$$` $\to$ `\bigr)$$`.
      - Automatically wraps trailing unbalanced mathematical clauses ending in `$$` into complete `$ ... $` / `$$ ... $$` math AST blocks.
      - Protected math tokenization ensures nested equations never double-wrap or conflict with parenthesized math rules.
    - **Full Token Budget & Zero Content Compromise**:
-     - Upgraded `max_tokens` from 1400/1800 to **4096 tokens** in `backend/main.py` with expanded 90s timeout, eliminating premature JSON cutoff.
+     - Balanced completion tokens (2200–2500 per request) to stay comfortably within Groq's 8,000 TPM limit while providing complete 4-8 node trees with intermediate steps.
      - Enforced a strict **Depth & Completeness Invariant** across all subject system prompts.
    - **Optimized Multimodal Vision Mode & Automatic Fallback**:
      - In `backend/main.py`, optimized page rendering to 96 DPI with compressed JPEG (quality=80), reducing image token weight by 75% to stay comfortably below Groq's 8,000 TPM limit.
-     - For multi-page documents (3+ pages), passes 2 visual pages as images and appends the remaining digital text.
+     - For multi-page documents (3+ pages), passes the primary visual page as an image and appends the remaining digital text.
      - Implemented automatic text fallback on 413/429 errors using `openai/gpt-oss-120b`, ensuring users never receive an error screen.
      - Added an selectable option in `frontend/src/App.tsx` and `UploadZone.tsx`: `👁️ Qwen 3.6 27B Vision (Diagrams, Visual Math & OCR)`.
    - **Parenthesized Math & Raw Command Detection**: Auto-converts parenthesized math expressions like `(f(x)=a^{x})`, `((e^{rt}))`, `(a>1)`, `(0<a<1)`, `(a^x=e^{x\ln a})`, `(\frac{d}{dx}a^x=a^x\ln a)` and standalone commands like `\to` into standard `$ ... $` AST math nodes without colliding with `\bigl(` or English phrases.

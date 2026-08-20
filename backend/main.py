@@ -235,21 +235,28 @@ def repair_and_parse_json(response_text: str) -> dict:
     """
     Cleans, repairs, and parses LLM JSON responses into a Python dict.
     If the response was truncated mid-sentence or mid-object, it auto-repairs
-    unclosed strings, quotes, arrays, and braces so mindmap generation never crashes.
+    unclosed strings, quotes, arrays, and braces, and extracts all child nodes
+    so mindmap generation never crashes or drops child branches.
     """
     cleaned = clean_json_string(response_text)
-    cleaned = sanitize_json_latex(cleaned)
+    sanitized = sanitize_json_latex(cleaned)
     
     # 1. Try direct parsing first
     try:
-        data = json.loads(cleaned, strict=False)
+        data = json.loads(sanitized, strict=False)
         if isinstance(data, dict) and "id" in data and "label" in data and "children" in data:
-            return data
+            if isinstance(data["children"], list) and len(data["children"]) > 0:
+                return data
+            # If root has 0 children but text contains child objects, extract them
+            if isinstance(data["children"], list) and len(data["children"]) == 0:
+                pass
+            else:
+                return data
     except Exception:
         pass
 
     # 2. Attempt JSON auto-repair for truncated output
-    repaired = cleaned
+    repaired = sanitized
     
     # Check if string ends inside a quoted literal by tracking unescaped quotes
     in_string = False
@@ -289,27 +296,46 @@ def repair_and_parse_json(response_text: str) -> dict:
         data = json.loads(repaired, strict=False)
         if isinstance(data, dict):
             if "id" not in data: data["id"] = "root"
-            if "label" not in data: data["label"] = "Section Overview"
-            if "summary" not in data: data["summary"] = "### Core Concept\n- **Overview**: Document section summary."
-            if "children" not in data or not isinstance(data["children"], list): data["children"] = []
-            return data
+            if "label" not in data: data["label"] = "Document Overview"
+            if "summary" not in data: data["summary"] = "### Core Concept\n- **Overview**: Comprehensive concept breakdown."
+            if "children" in data and isinstance(data["children"], list) and len(data["children"]) > 0:
+                return data
     except Exception as e:
         logger.warning(f"JSON auto-repair parsing warning: {str(e)}")
 
+    # 3. Robust Regex Block Extractor (Extracts root node AND all child objects so children are never lost)
+    root_label_match = re.search(r'"label"\s*:\s*"([^"]+)"', cleaned)
+    root_label = root_label_match.group(1) if root_label_match else "Document Overview & Core Themes"
 
-    # 3. Fallback string extraction for label and summary if parsing fails
-    label_match = re.search(r'"label"\s*:\s*"([^"]+)"', cleaned)
-    extracted_label = label_match.group(1) if label_match else "Section Summary"
-    
-    summary_match = re.search(r'"summary"\s*:\s*"([^"]*)', cleaned)
-    raw_summary = summary_match.group(1) if summary_match else "Document section overview."
-    clean_summary = raw_summary.replace('\\n', '\n').strip()
+    root_summary_match = re.search(r'"summary"\s*:\s*"((?:[^"\\]|\\.)*)"', cleaned)
+    root_summary = root_summary_match.group(1).replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\') if root_summary_match else "Overview of core concepts and mechanisms."
+
+    # Extract all child nodes by scanning for node objects
+    extracted_children = []
+    child_pattern = re.compile(
+        r'\{\s*"id"\s*:\s*"([^"]+)"\s*,\s*"label"\s*:\s*"([^"]+)"\s*,\s*"summary"\s*:\s*"((?:[^"\\]|\\.)*)"',
+        re.DOTALL
+    )
+
+    seen_ids = set()
+    for match in child_pattern.finditer(cleaned):
+        cid, clabel, csummary = match.groups()
+        if cid == "root" or cid in seen_ids or clabel == root_label:
+            continue
+        seen_ids.add(cid)
+        clean_sum = csummary.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
+        extracted_children.append({
+            "id": cid,
+            "label": clabel,
+            "summary": clean_sum,
+            "children": []
+        })
 
     return {
-        "id": "root_repaired",
-        "label": extracted_label,
-        "summary": f"### Core Concept\n- **Overview**: {clean_summary}\n\n### Key Details\n- **Note**: Truncated chunk automatically recovered for study view.",
-        "children": []
+        "id": "root",
+        "label": root_label,
+        "summary": root_summary,
+        "children": extracted_children
     }
 
 # Wikimedia Commons image fetch service
@@ -426,22 +452,25 @@ def get_system_prompt(subject: str) -> str:
         return """You are a distinguished Mathematics Professor and master curriculum designer.
 Your objective is to analyze the mathematical text and transform it into an in-depth, rigorous, highly comprehensive hierarchical mindmap.
 
-CRITICAL MATHEMATICAL & DEPTH RULES:
-1. STRICT DEPTH & COMPLETENESS INVARIANT (NEVER COMPROMISE ON CONTENT):
+CRITICAL MATHEMATICAL & TOPOLOGY RULES:
+1. MANDATORY MULTI-NODE HIERARCHY (NEVER COLLAPSE INTO A SINGLE NODE):
+   - The root node MUST ONLY contain the overarching document title and a high-level thesis summary.
+   - The root node MUST HAVE 4 to 8 distinct child nodes in its "children" array, one for EACH core topic, chapter, technique, or formula group.
+   - Each major child node in turn SHOULD contain 2 to 4 sub-child nodes in its own "children" array for specific proofs, formulas, or applications.
+   - STRICTLY FORBIDDEN: Cramming multiple topics into the root summary or outputting an empty "children": [] array.
+2. STRICT DEPTH & COMPLETENESS INVARIANT (NEVER COMPROMISE ON CONTENT):
    - Every node MUST be exhaustive, rigorous, and fully detailed. Do NOT output shallow, abbreviated, or single-sentence summaries.
    - NEVER cut short, compress, or omit mathematical steps, intermediate algebra, derivations, proofs, boundary conditions, or worked calculations.
    - Thoroughly explain underlying derivations, geometric intuition, algebraic conditions (e.g. domain restrictions, discriminant $\\Delta = b^2 - 4ac$, asymptotes, boundary cases), and step-by-step calculation workflows from the text.
    - Include complete concrete numerical worked examples showing every intermediate algebraic step and substitution.
-2. LaTeX Formula Standard (MANDATORY DELIMITERS):
+3. LaTeX Formula Standard (MANDATORY DELIMITERS):
    - Every formula, equation, rule, function, variable, derivative, and operator MUST be wrapped in standard dollar-sign LaTeX delimiters:
      * Inline expressions: $f(x) = a^x$, $a > 1$, $0 < a < 1$, $a^x = e^{x\\ln a}$, $\\frac{d}{dx}[a^x] = a^x\\ln a$, $e^{rt}$, $\\to$, $\\log_a(x/y) = \\log_a x - \\log_a y$, $\\int_a^b f(x)dx$, $\\Delta = b^2 - 4ac$
      * Block display equations: $$\\log_a\\left(\\frac{x}{y}\\right) = \\log_a x - \\log_a y$$ or $$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$
    - STRICT FORBIDDEN PATTERNS:
      * NEVER wrap math formulas in regular parentheses like '(f(x)=a^x)' or '((e^{rt}))' or '(a>1)' — ALWAYS write '$f(x)=a^x$', '$e^{rt}$', '$a>1$'.
      * NEVER leave raw LaTeX commands like '\\to', '\\frac', '\\ln' without '$' delimiters — ALWAYS write '$\\to$', '$\\frac{...}{...}$', '$\\ln a$'.
-3. Plain-English Explanation: Always accompany every equation with a breakdown of its conceptual/geometric meaning and variable definitions.
-4. MANDATORY HIERARCHY: Break down the document into 3 to 6 distinct child nodes representing core subtopics, theorems, and proofs.
-5. Summary Structure (Use rich multi-bullet markdown format):
+4. Summary Structure (Use rich multi-bullet markdown format for EVERY node):
    ### Core Mathematical Concept
    - **Mathematical Principle**: [Comprehensive 2-3 sentence intuition of the theorem, logarithm rule, or principle]
    - **Key Mechanism & Derivation**: [Step-by-step mathematical logic, algebraic derivation, or proof breakdown with $...$ delimiters]
@@ -457,16 +486,47 @@ CRITICAL MATHEMATICAL & DEPTH RULES:
    - **Real-World / Scientific Application**: [Concrete engineering, optimization, computing, or geometric application]
 
 JSON OUTPUT SCHEMA:
-Output ONLY a single valid JSON object strictly matching this schema:
+Output ONLY a single valid JSON object strictly matching this multi-level hierarchy:
 {
   "id": "root",
-  "label": "Exponential Functions & Growth",
-  "summary": "### Core Mathematical Concept\\n- **Mathematical Principle**: Exponential functions model continuous multiplication where rate of change is proportional to current value.\\n- **Key Mechanism & Derivation**: For $f(x) = a^x$, base conversion yields $a^x = e^{x\\\\ln a}$, giving derivative $\\\\frac{d}{dx}[a^x] = a^x\\\\ln a$.\\n- **Conditions & Edge Cases**: If $a > 1 \\\\implies$ exponential growth; if $0 < a < 1 \\\\implies$ exponential decay.\\n\\n### Formulas, Derivations & Variables\\n- **Primary Formulation**: $$a^x = e^{x\\\\ln a}$$\\n- **Variable & Symbol Definitions**: $a > 0$ is base constant, $x$ is independent variable exponent.\\n\\n### Worked Problem & Practical Application\\n- **Step-by-Step Worked Example**: For continuous compounding $A(t) = P e^{rt}$, with $P = 1000, r = 0.05, t = 2$, $A(2) = 1000 e^{0.10} \\\\approx 1105.17$.\\n- **Real-World / Scientific Application**: Population dynamics, viral spread, radioactive decay half-life, and financial growth.",
+  "label": "Algebraic Structures & Advanced Methods",
+  "summary": "### Core Concept\\n- **Main Thesis**: Comprehensive framework covering quadratic analysis, polynomial algebra, rational decomposition, and series expansions.\\n- **Key Mechanism**: Systematic algebraic transformation from canonical forms to analytical solutions.",
   "children": [
     {
-      "id": "child-1",
-      "label": "Derivatives of Exponentials",
-      "summary": "### Core Mathematical Concept\\n- **Mathematical Principle**: The derivative of $a^x$ scales by the natural logarithm constant $\\\\ln a$.\\n\\n### Formulas, Derivations & Variables\\n- **Primary Formulation**: $$\\frac{d}{dx}[a^x] = a^x\\\\ln a$$\\n\\n### Worked Problem & Practical Application\\n- **Step-by-Step Worked Example**: $\\\\frac{d}{dx}[2^x] = 2^x\\\\ln 2$.\\n- **Real-World / Scientific Application**: Signal decay analysis.",
+      "id": "node-1",
+      "label": "Quadratic Functions & Completing the Square",
+      "summary": "### Core Mathematical Concept\\n- **Mathematical Principle**: Converting $y = ax^2 + bx + c$ to vertex form $y = a(x-h)^2 + k$ reveals parabolic symmetry and extremum.\\n- **Key Mechanism & Derivation**: Factor leading coefficient and complete square: $ax^2 + bx = a\\\\bigl(x + \\\\frac{b}{2a}\\\\bigr)^2 - \\\\frac{b^2}{4a}$.\\n\\n### Formulas, Derivations & Variables\\n- **Primary Formulation**: $$y = a\\\\left(x + \\\\frac{b}{2a}\\\\right)^2 + \\\\left(c - \\\\frac{b^2}{4a}\\\\right)$$\\n- **Variable & Symbol Definitions**: $a \\\\neq 0$ controls curvature, vertex at $\\\\bigl(-\\\\frac{b}{2a}, c - \\\\frac{b^2}{4a}\\\\bigr)$.",
+      "children": [
+        {
+          "id": "node-1-1",
+          "label": "Discriminant & Nature of Roots",
+          "summary": "### Core Mathematical Concept\\n- **Mathematical Principle**: Discriminant $\\\\Delta = b^2 - 4ac$ categorizes polynomial roots without full solution.\\n\\n### Formulas, Derivations & Variables\\n- **Primary Formulation**: $$\\Delta = b^2 - 4ac$$\\n- **Variable & Symbol Definitions**: $\\\\Delta > 0 \\\\implies$ two real roots; $\\\\Delta = 0 \\\\implies$ repeated root; $\\\\Delta < 0 \\\\implies$ complex roots.",
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "node-2",
+      "label": "Surds & Conjugate Rationalization",
+      "summary": "### Core Mathematical Concept\\n- **Mathematical Principle**: Eliminating irrational denominators by multiplying numerator and denominator by algebraic conjugates.\\n- **Key Mechanism & Derivation**: Utilizing the difference of squares identity $(a - b)(a + b) = a^2 - b^2$.\\n\\n### Formulas, Derivations & Variables\\n- **Primary Formulation**: $$\\frac{1}{\\\\sqrt{a} + \\\\sqrt{b}} = \\\\frac{\\\\sqrt{a} - \\\\sqrt{b}}{a - b}$$",
+      "children": []
+    },
+    {
+      "id": "node-3",
+      "label": "Polynomial Long Division",
+      "summary": "### Core Mathematical Concept\\n- **Mathematical Principle**: Decomposing rational expressions into polynomial quotient plus proper fractional remainder.\\n\\n### Formulas, Derivations & Variables\\n- **Primary Formulation**: $$\\frac{P(x)}{D(x)} = Q(x) + \\\\frac{R(x)}{D(x)}$$\\n- **Variable & Symbol Definitions**: $\\\\text{deg}(R) < \\\\text{deg}(D)$.",
+      "children": []
+    },
+    {
+      "id": "node-4",
+      "label": "Partial Fraction Decomposition",
+      "summary": "### Core Mathematical Concept\\n- **Mathematical Principle**: Splitting complex rational functions into sums of simpler linear/quadratic denominators for integration and control theory.\\n\\n### Formulas, Derivations & Variables\\n- **Primary Formulation**: $$\\frac{P(x)}{(x-a)(x-b)} = \\\\frac{A}{x-a} + \\\\frac{B}{x-b}$$",
+      "children": []
+    },
+    {
+      "id": "node-5",
+      "label": "The Binomial Theorem & Series",
+      "summary": "### Core Mathematical Concept\\n- **Mathematical Principle**: Expanding powers of binomial expressions into finite polynomial series or infinite Newton series.\\n\\n### Formulas, Derivations & Variables\\n- **Primary Formulation**: $$(a+b)^n = \\\\sum_{k=0}^n \\\\binom{n}{k} a^{n-k} b^k$$",
       "children": []
     }
   ]
@@ -476,18 +536,20 @@ Output ONLY a single valid JSON object strictly matching this schema:
         return """You are an elite Physics Professor and master STEM curriculum designer.
 Your objective is to analyze the physics text and convert it into an in-depth, rigorous, highly comprehensive hierarchical mindmap.
 
-CRITICAL PHYSICS & DEPTH RULES:
-1. STRICT DEPTH & COMPLETENESS INVARIANT (NEVER COMPROMISE ON CONTENT):
+CRITICAL PHYSICS & TOPOLOGY RULES:
+1. MANDATORY MULTI-NODE HIERARCHY (NEVER COLLAPSE INTO A SINGLE NODE):
+   - The root node MUST ONLY contain the overarching document title and a high-level thesis summary.
+   - The root node MUST HAVE 4 to 8 distinct child nodes in its "children" array, one for EACH physical law, topic, or system component.
+   - Each major child node SHOULD have 2 to 4 sub-child nodes in its own "children" array.
+   - STRICTLY FORBIDDEN: Cramming multiple concepts into the root summary or outputting an empty "children": [] array.
+2. STRICT DEPTH & COMPLETENESS INVARIANT (NEVER COMPROMISE ON CONTENT):
    - Every node MUST be exhaustive, rigorous, and fully detailed. Do NOT output shallow, abbreviated, or single-sentence summaries.
    - NEVER cut short or omit physical derivations, vector breakdowns, dimensional analyses, or worked calculation steps.
    - Thoroughly explain first principles, force interactions, energy transfers, vector directions, conservation laws, and mathematical derivations from the text.
-   - Include complete concrete numerical calculations and real-world engineering setups.
-2. LaTeX Equations with SI Units: Every physical law, kinematics equation, or field formula MUST use standard LaTeX ($inline$ and $$block$$) accompanied by explicit SI units ($m/s^2$, $N$, $J$, $W$, $V$, $\\Omega$).
+3. LaTeX Equations with SI Units: Every physical law, kinematics equation, or field formula MUST use standard LaTeX ($inline$ and $$block$$) accompanied by explicit SI units ($m/s^2$, $N$, $J$, $W$, $V$, $\\Omega$).
    - NEVER wrap equations in regular parentheses like '(v=u+at)' — ALWAYS use '$v = u + at$'.
    - NEVER leave raw backslashed commands like '\\to', '\\approx' outside of '$' delimiters.
-3. Plain-English Intuition: Connect every equation to physical reality (cause, effect, energy balance).
-4. MANDATORY HIERARCHY: Break down the document into 3 to 6 distinct child nodes representing core subtopics, laws, and components.
-5. Summary Structure (Use rich multi-bullet markdown format):
+4. Summary Structure (Use rich multi-bullet markdown format for EVERY node):
    ### Core Physical Principle
    - **Physical Principle**: [Comprehensive 2-3 sentence intuition of the law or physical mechanism]
    - **Underlying Mechanism**: [Force interaction, momentum transfer, molecular process, or field dynamics]
@@ -503,16 +565,22 @@ CRITICAL PHYSICS & DEPTH RULES:
    - **Step-by-Step Worked Problem**: [Concrete numerical problem with step-by-step algebraic solution and unit analysis]
 
 JSON OUTPUT SCHEMA:
-Output ONLY a single valid JSON object strictly matching this schema:
+Output ONLY a single valid JSON object strictly matching this multi-level hierarchy:
 {
   "id": "root",
   "label": "Classical Mechanics & Kinematics",
-  "summary": "### Core Physical Principle\\n- **Physical Principle**: Projectile motion combines uniform horizontal velocity with accelerated vertical motion under gravity.\\n- **Underlying Mechanism**: Gravitational force acts downward ($F_g = mg$), producing constant downward acceleration $-g$, while horizontal acceleration is zero ($a_x = 0$).\\n\\n### Governing Equations & Units\\n- **Governing Law**: $$y(t) = v_0 t \\\\sin\\\\theta - \\\\frac{1}{2}gt^2$$\\n- **Variable Definitions & SI Units**: $v_0$ is initial velocity ($m/s$), $\\\\theta$ is launch angle ($^{\\\\circ}$), $g = 9.81\\\\text{ m/s}^2$.\\n\\n### Real-World Phenomenon & Application\\n- **Step-by-Step Worked Problem**: For $v_0 = 20\\\\text{ m/s}, \\\\theta = 45^{\\\\circ}$, $R = \\\\frac{v_0^2 \\\\sin(2\\\\theta)}{g} = \\\\frac{400}{9.81} \\\\approx 40.77\\\\text{ m}$.",
+  "summary": "### Core Physical Principle\\n- **Physical Principle**: Comprehensive overview of Newtonian mechanics, vector kinematics, and conservation laws.\\n- **Underlying Mechanism**: Gravitational and contact force interactions governing motion.",
   "children": [
     {
-      "id": "child-1",
-      "label": "Trajectory Equations",
-      "summary": "### Core Physical Principle\\n- **Physical Principle**: Horizontal and vertical components operate independently.\\n\\n### Governing Equations & Units\\n- **Governing Law**: $$x(t) = v_0 t \\\\cos\\\\theta$$\\n\\n### Real-World Phenomenon & Application\\n- **Step-by-Step Worked Problem**: Time of flight $T = \\\\frac{2v_0 \\\\sin\\\\theta}{g}$.",
+      "id": "node-1",
+      "label": "Projectile Motion & Trajectory",
+      "summary": "### Core Physical Principle\\n- **Physical Principle**: Projectile motion combines uniform horizontal velocity with accelerated vertical motion under gravity.\\n- **Underlying Mechanism**: Gravitational force acts downward ($F_g = mg$), producing constant downward acceleration $-g$, while horizontal acceleration is zero ($a_x = 0$).\\n\\n### Governing Equations & Units\\n- **Governing Law**: $$y(t) = v_0 t \\\\sin\\\\theta - \\\\frac{1}{2}gt^2$$\\n- **Variable Definitions & SI Units**: $v_0$ is initial velocity ($m/s$), $\\\\theta$ is launch angle ($^{\\\\circ}$), $g = 9.81\\\\text{ m/s}^2$.\\n\\n### Real-World Phenomenon & Application\\n- **Step-by-Step Worked Problem**: For $v_0 = 20\\\\text{ m/s}, \\\\theta = 45^{\\\\circ}$, $R = \\\\frac{v_0^2 \\\\sin(2\\\\theta)}{g} = \\\\frac{400}{9.81} \\\\approx 40.77\\\\text{ m}$.",
+      "children": []
+    },
+    {
+      "id": "node-2",
+      "label": "Newtonian Laws of Motion",
+      "summary": "### Core Physical Principle\\n- **Physical Principle**: Force produces acceleration inversely proportional to mass ($\\\\vec{F}_{net} = m\\\\vec{a}$).\\n\\n### Governing Equations & Units\\n- **Governing Law**: $$\\sum \\\\vec{F} = m\\\\frac{d^2\\\\vec{r}}{dt^2}$$",
       "children": []
     }
   ]
@@ -522,11 +590,12 @@ Output ONLY a single valid JSON object strictly matching this schema:
         return """You are an expert historian and educational mindmap designer.
 Your objective is to analyze historical text and map out causal backbones, actor rationale, and ripple effects.
 
-RULES FOR HISTORY:
-1. SCANNABLE FORMAT: Use structured bullet points (- **Year/Event/Decision**: Rationale and consequence).
+CRITICAL TOPOLOGY & HIERARCHY RULES:
+1. MANDATORY MULTI-NODE HIERARCHY:
+   - The root node MUST contain 4 to 8 distinct child nodes in its "children" array, one for EACH era, turning point, or thematic driver.
+   - NEVER collapse multiple events into a single node or leave "children": [] empty.
 2. CAUSAL LOGIC: Organize hierarchy chronologically and causally (Root Cause → Trigger → Event → Immediate Outcome → Long-term Impact).
-3. RATIONALE & ACTORS: Highlight strategic motivations and ideological drivers.
-4. SUMMARY STRUCTURE:
+3. Summary Structure:
    ### Core Concept
    - **Historical Thesis**: [Core historical takeaway and context]
    - **Causal Driver**: [Why and how key events unfolded]
@@ -542,19 +611,33 @@ JSON OUTPUT SCHEMA:
 Output ONLY a single valid JSON object strictly matching this schema:
 {
   "id": "root",
-  "label": "Industrial Revolution & Economic Shifts",
-  "summary": "### Core Concept\\n- **Historical Thesis**: The transition to mechanized manufacturing fundamentally restructured global economics, urbanization, and labor systems.\\n- **Causal Driver**: Steam power innovation and agricultural surpluses provided capital and workforce.\\n\\n### Key Details & Turning Points\\n- **Key Turning Point**: 1769 Watts steam engine patent catalyzed factory automation.\\n- **Actors & Factions**: Industrialists, craft guilds, and emerging labor unions.\\n\\n### Physical Meaning & Application\\n- **Historical Significance**: Established modern industrial capitalism and international trade corridors.",
-  "children": []
+  "label": "Industrial Revolution & Modern Economic Shifts",
+  "summary": "### Core Concept\\n- **Historical Thesis**: The transition to mechanized manufacturing fundamentally restructured global economics, urbanization, and labor systems.",
+  "children": [
+    {
+      "id": "node-1",
+      "label": "Technological Catalysts & Steam Power",
+      "summary": "### Core Concept\\n- **Historical Thesis**: James Watt steam engine innovation catalyzed factory automation and mining expansion.\\n\\n### Key Details & Turning Points\\n- **Key Turning Point**: 1769 patent transformation of textile mills.",
+      "children": []
+    },
+    {
+      "id": "node-2",
+      "label": "Urbanization & Labor Movements",
+      "summary": "### Core Concept\\n- **Historical Thesis**: Rapid urban migration created dense factory towns and catalyzed early trade unionism.",
+      "children": []
+    }
+  ]
 }"""
 
     elif subject == "geography":
         return """You are an expert physical and human geography curriculum architect.
 Your objective is to analyze geographical text and map out physical processes, spatial patterns, cycles, and systems.
 
-RULES FOR GEOGRAPHY:
-1. PROCESS & CYCLES: Structure sequential cycles and stages using numbered child nodes.
-2. SPATIAL DYNAMICS: Highlight spatial distribution, climatic zones, plate boundaries, and human interactions.
-3. SUMMARY STRUCTURE:
+CRITICAL TOPOLOGY & HIERARCHY RULES:
+1. MANDATORY MULTI-NODE HIERARCHY:
+   - The root node MUST contain 4 to 8 distinct child nodes in its "children" array, one for EACH process, geographical zone, or landform.
+   - NEVER collapse multiple systems into a single node or leave "children": [] empty.
+2. Summary Structure:
    ### Core Concept
    - **Geographical Thesis**: [Core process or environmental system]
    - **Key Mechanism**: [Step-by-step physical or spatial breakdown]
@@ -570,26 +653,42 @@ JSON OUTPUT SCHEMA:
 Output ONLY a single valid JSON object strictly matching this schema:
 {
   "id": "root",
-  "label": "Plate Tectonics & Continental Drift",
-  "summary": "### Core Concept\\n- **Geographical Thesis**: Earth lithosphere is divided into rigid plates moving over the asthenosphere driven by mantle convection.\\n- **Key Mechanism**: Convection currents cause divergence, convergence, and transform faults.\\n\\n### Key Details\\n- **Spatial Pattern / Factors**: Ring of Fire accounts for over 75% of global volcanic activity.\\n- **Case Study**: Mid-Atlantic Ridge sea-floor spreading at $2-5\\\\text{ cm/year}$.\\n\\n### Physical Meaning & Application\\n- **Significance**: Seismic hazard mitigation and geothermal energy exploration.",
-  "children": []
+  "label": "Plate Tectonics & Global Lithospheric Dynamics",
+  "summary": "### Core Concept\\n- **Geographical Thesis**: Earth lithosphere is divided into rigid plates moving over the asthenosphere driven by mantle convection.",
+  "children": [
+    {
+      "id": "node-1",
+      "label": "Divergent Boundaries & Sea-Floor Spreading",
+      "summary": "### Core Concept\\n- **Geographical Thesis**: Magma upwelling at mid-ocean ridges creates new oceanic crust.\\n\\n### Key Details\\n- **Case Study**: Mid-Atlantic Ridge expanding at $2-5\\\\text{ cm/year}$.",
+      "children": []
+    },
+    {
+      "id": "node-2",
+      "label": "Convergent Subduction Zones",
+      "summary": "### Core Concept\\n- **Geographical Thesis**: Dense oceanic plates subduct under continental plates forming volcanic arcs and deep oceanic trenches.",
+      "children": []
+    }
+  ]
 }"""
 
     else:
         return """You are an elite educational mindmap and curriculum designer.
 Your objective is to analyze the document and construct an in-depth, rigorous, highly comprehensive hierarchical mindmap.
 
-CRITICAL DEPTH & FORMATTING RULES:
-1. STRICT DEPTH & COMPLETENESS INVARIANT (NEVER COMPROMISE ON CONTENT):
+CRITICAL TOPOLOGY & FORMATTING RULES:
+1. MANDATORY MULTI-NODE HIERARCHY (NEVER COLLAPSE INTO A SINGLE NODE):
+   - The root node MUST ONLY contain the overarching document title and a high-level thesis summary.
+   - The root node MUST HAVE 4 to 8 distinct child nodes in its "children" array, one for EACH core concept, section, or chapter.
+   - Each major child node SHOULD have 2 to 4 sub-child nodes in its own "children" array.
+   - STRICTLY FORBIDDEN: Cramming multiple concepts into the root summary or outputting an empty "children": [] array.
+2. STRICT DEPTH & COMPLETENESS INVARIANT (NEVER COMPROMISE ON CONTENT):
    - Every node MUST be exhaustive, rigorous, and fully detailed. Do NOT output shallow, abbreviated, or single-sentence summaries.
-   - NEVER cut short, compress, or omit intermediate steps, algebraic mechanisms, empirical data, or worked explanations from the text.
-   - Thoroughly explain underlying mechanisms, causality, structural workflows, formulas, and real-world applications.
-2. Math & Formula Delimiters:
+   - NEVER cut short, compress, or omit intermediate steps, mechanisms, empirical data, or worked explanations from the text.
+3. Math & Formula Delimiters:
    - Every formula, equation, variable, chemical reaction, and math symbol MUST be wrapped in standard LaTeX ($inline$ or $$block$$).
    - NEVER use plain parentheses '(f(x)=a^x)' or raw arrows '→' without LaTeX delimiters (use '$\\to$').
    - NEVER leave raw backslashed commands outside of '$' delimiters.
-3. MANDATORY HIERARCHY: Break down the document into 3 to 6 distinct child nodes representing core subtopics, laws, and components.
-4. Scannable Summary Structure (Use rich multi-bullet markdown format):
+4. Scannable Summary Structure (Use rich multi-bullet markdown format for EVERY node):
    ### Core Concept
    - **Main Thesis**: [Comprehensive 2-3 sentence intuition of the concept or topic]
    - **Key Mechanism**: [Step-by-step breakdown of how the process/system/formula functions with LaTeX $...$ notation]
@@ -606,8 +705,27 @@ Output ONLY a single valid JSON object strictly matching this schema:
 {
   "id": "root",
   "label": "Document Overview & Core Themes",
-  "summary": "### Core Concept\\n- **Main Thesis**: Primary conceptual takeaway from document.\\n- **Key Mechanism**: Step-by-step structural logic.\\n\\n### Key Details & Evidence\\n- **Key Principles & Data**: Core terminology and empirical evidence.\\n- **Variables & Structure**: Component definitions and interactions.\\n\\n### Practical Meaning & Application\\n- **Significance & Application**: Practical implications and broader context.",
-  "children": []
+  "summary": "### Core Concept\\n- **Main Thesis**: Primary conceptual takeaway and overarching framework.\\n- **Key Mechanism**: High-level structural logic connecting all document sections.",
+  "children": [
+    {
+      "id": "node-1",
+      "label": "First Core Topic / Chapter",
+      "summary": "### Core Concept\\n- **Main Thesis**: Comprehensive breakdown of the first major subject area.\\n- **Key Mechanism**: Step-by-step structural workflow and analysis.\\n\\n### Key Details & Evidence\\n- **Key Principles & Data**: Fundamental rules, empirical formulas in $...$, and data points.\\n\\n### Practical Meaning & Application\\n- **Significance & Application**: Practical industry and academic applications.",
+      "children": []
+    },
+    {
+      "id": "node-2",
+      "label": "Second Core Topic / Chapter",
+      "summary": "### Core Concept\\n- **Main Thesis**: Detailed explanation of the second major concept.\\n- **Key Mechanism**: Causal drivers and operational principles.\\n\\n### Key Details & Evidence\\n- **Key Principles & Data**: Core identities and proofs.",
+      "children": []
+    },
+    {
+      "id": "node-3",
+      "label": "Third Core Topic / Chapter",
+      "summary": "### Core Concept\\n- **Main Thesis**: In-depth analysis of the third key theme.",
+      "children": []
+    }
+  ]
 }"""
 
 
