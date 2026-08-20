@@ -338,6 +338,70 @@ def repair_and_parse_json(response_text: str) -> dict:
         "children": extracted_children
     }
 
+def repair_math_syntax_backend(text: str) -> str:
+    """
+    Validates and repairs LaTeX math formatting, step markers, and stray mid-formula delimiters
+    in mindmap summaries and labels on the backend before returning JSON to the client.
+    """
+    if not text:
+        return text
+
+    s = text
+
+    # 1. Clean step prefixes like {2}:$$ -> \n- **Step 2**: $$
+    s = re.sub(r'(?:^|\n)\s*[\{\[\(](\d+)[\}\]\)]\s*:\s*', r'\n- **Step \1**: ', s)
+
+    # 2. Normalize Unicode symbols to standard LaTeX
+    s = s.replace('±', r'\pm ')
+    s = s.replace('×', r'\times ')
+    s = s.replace('÷', r'\div ')
+    s = s.replace('≠', r'\neq ')
+    s = s.replace('≤', r'\le ')
+    s = s.replace('≥', r'\ge ')
+    s = s.replace('≈', r'\approx ')
+    s = s.replace('→', r' $\to$ ')
+    s = s.replace('⇒', r' $\implies$ ')
+    s = s.replace('²', '^2').replace('³', '^3')
+
+    # 3. Repair stray mid-formula closing $$ before an exponent:
+    # e.g. "a[x+\frac{b}{2a}$$^2-\frac{b^2}{4a^2}\bigr]" -> "a\left[x+\frac{b}{2a}\right]^2-\frac{b^2}{4a^2}"
+    s = re.sub(r'\\frac\{([^{}]+)\}\{([^{}]+)\}\$\$[\^](\d+|\{[^{}]+\})', r'\\frac{\1}{\2}\\bigr)^\3', s)
+    s = re.sub(r'([a-zA-Z0-9)\]])\$\$[\^](\d+|\{[^{}]+\})', r'\1^\2', s)
+
+    # 4. Repair broken completing the square clauses: "a[x 2 + a/b x]" -> "a\left[x^2 + \frac{b}{a}x\right]"
+    s = re.sub(r'a\[x\s*2\s*\+\s*([ab])\/([ab])\s*x\]', r'a\\left[x^2 + \\frac{b}{a}x\\right]', s)
+    s = re.sub(r'ax\+\\frac\{b\}\{2a\}\s*\\bigr\)\^2', r'a\\left(x + \\frac{b}{2a}\\right)^2', s)
+    s = re.sub(r'ax\+\\frac\{b\}\{2a\}\s*\^2', r'a\\left(x + \\frac{b}{2a}\\right)^2', s)
+    s = re.sub(r'a\[x\+\\frac\{b\}\{2a\}\s*\\bigr\)\^2', r'a\\left[\\left(x + \\frac{b}{2a}\\right)^2', s)
+
+    # 5. Fix unparenthesized linear+fraction before exponent: x+\frac{b}{2a}^2 -> \left(x+\frac{b}{2a}\right)^2
+    s = re.sub(r'((?:[a-zA-Z0-9]|\\[a-zA-Z]+)\s*[+-]\s*\\frac\{[^{}]*\}\{[^{}]*\})\s*\^(\d+|\{[^{}]*\})', r'\\left(\1\\right)^\2', s)
+
+    # 6. Repair sizing macros missing opening or closing parentheses
+    s = re.sub(r'\\bigl([a-zA-Z0-9])', r'\\bigl(\1', s)
+    s = re.sub(r'\\bigr(?=[^)\\]|$)', r'\\bigr)', s)
+
+    return s
+
+def sanitize_mindmap_math(node: dict) -> dict:
+    """
+    Recursively validates and repairs LaTeX syntax across all nodes in the mindmap tree.
+    """
+    if not isinstance(node, dict):
+        return node
+
+    if "label" in node and isinstance(node["label"], str):
+        node["label"] = repair_math_syntax_backend(node["label"])
+
+    if "summary" in node and isinstance(node["summary"], str):
+        node["summary"] = repair_math_syntax_backend(node["summary"])
+
+    if "children" in node and isinstance(node["children"], list):
+        for idx, child in enumerate(node["children"]):
+            node["children"][idx] = sanitize_mindmap_math(child)
+
+    return node
+
 # Wikimedia Commons image fetch service
 
 async def fetch_wikimedia_image(query: str) -> Optional[dict]:
@@ -964,132 +1028,149 @@ async def generate_mindmap_vision(
         if len(doc) == 0:
             raise HTTPException(status_code=400, detail="The uploaded PDF is empty.")
 
-        # Extract digital text as backup and for multi-page context
-        all_extracted_text = ""
-        for page in doc:
-            all_extracted_text += page.get_text() + "\n"
-
-        # Multi-Page Token Budget:
-        # Groq's qwen/qwen3.6-27b on-demand tier has an 8,000 TPM ceiling (~2400 tokens per image).
-        # We pass the primary high-clarity page as an image and append remaining page text, allowing full 4096 max_tokens completion space.
-        page_images_b64 = []
-        max_visual_pages = min(len(doc), 1)
-        for i in range(max_visual_pages):
-            page = doc[i]
-            # Render at 96 DPI for crisp text with optimized token weight
-            pix = page.get_pixmap(dpi=96)
-            pil_img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
-            
-            # Downsample if dimensions exceed 1024px
-            max_dim = max(pil_img.size)
-            if max_dim > 1024:
-                scale = 1024 / max_dim
-                new_size = (int(pil_img.size[0] * scale), int(pil_img.size[1] * scale))
-                pil_img = pil_img.resize(new_size, Image.Resampling.LANCZOS)
-                
-            buf = io.BytesIO()
-            pil_img.save(buf, format="JPEG", quality=80, optimize=True)
-            page_images_b64.append(base64.b64encode(buf.getvalue()).decode("utf-8"))
-
+        # Limit to first 5 pages for vision chunking
+        total_pages = min(len(doc), 5)
         system_prompt = get_system_prompt(subject)
-        
-        prompt_text = (
-            "Analyze the visual diagrams, flowcharts, mathematical/physical formulas, graphs, tables, "
-            "and text on these document page(s). Synthesize BOTH the visual diagrams and text into an "
-            "exhaustive, highly structured hierarchical mindmap JSON matching the requested schema with 3 to 6 detailed child nodes.\n"
-            "CRITICAL: Do NOT compress, abbreviate, or omit intermediate algebra, mechanisms, formulas, or worked explanations.\n"
-            "Ensure all formulas and equations are strictly formatted in standard LaTeX delimiters ($...$ for inline, $$...$$ for block)."
-        )
-        
-        # If document has additional pages beyond the visual image, append their text
-        if len(doc) > 1 and all_extracted_text.strip():
-            prompt_text += f"\n\nAdditional Document Context from Remaining Pages:\n{all_extracted_text[:6000]}"
-
-        user_content_blocks = [
-            {
-                "type": "text",
-                "text": prompt_text
-            }
-        ]
-        for img_b64 in page_images_b64:
-            user_content_blocks.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/jpeg;base64,{img_b64}"
-                }
-            })
-
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
 
-        data = {
-            "model": "qwen/qwen3.6-27b",
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content_blocks}
-            ],
-            "temperature": 0.2,
-            "max_tokens": 4096
-        }
+        # 1-Page Visual Chunking Pipeline:
+        # Each PDF page is rendered as an optimized 96 DPI JPEG and processed with an interval
+        # to guarantee execution stays safely below Groq's 8,000 TPM limit.
+        page_submaps = []
+        model_used_name = "qwen/qwen3.6-27b (Vision Mode)"
 
-        logger.info(f"Sending Groq Vision request for {file.filename} ({len(page_images_b64)} visual pages) using model: 'qwen/qwen3.6-27b'")
-        
         async with httpx.AsyncClient(timeout=90.0) as client:
-            resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=headers,
-                json=data,
-                timeout=90.0
-            )
+            for page_idx in range(total_pages):
+                if page_idx > 0:
+                    logger.info(f"Intervaling visual requests (waiting 1.5s before page {page_idx + 1}/{total_pages})...")
+                    await asyncio.sleep(1.5)
 
-            # If Groq Vision hits a 413 (Payload/TPM Too Large) or 429 (Rate Limit), smoothly fallback to fast-text LPU model
-            if resp.status_code in [413, 429]:
-                logger.warning(f"Groq Vision returned status {resp.status_code}. Automatically falling back to text LPU model 'openai/gpt-oss-120b'.")
-                fallback_payload = {
-                    "model": "openai/gpt-oss-120b",
+                page = doc[page_idx]
+                page_text = page.get_text().strip()
+
+                # Render page frame at 96 DPI for crisp text with low token footprint
+                pix = page.get_pixmap(dpi=96)
+                pil_img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+                
+                max_dim = max(pil_img.size)
+                if max_dim > 1024:
+                    scale = 1024 / max_dim
+                    new_size = (int(pil_img.size[0] * scale), int(pil_img.size[1] * scale))
+                    pil_img = pil_img.resize(new_size, Image.Resampling.LANCZOS)
+
+                buf = io.BytesIO()
+                pil_img.save(buf, format="JPEG", quality=80, optimize=True)
+                img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+                prompt_text = (
+                    f"Analyze Page {page_idx + 1} of this document. Synthesize BOTH the visual diagrams, formulas, tables, and text "
+                    f"into an exhaustive hierarchical mindmap JSON with 3 to 6 detailed child nodes.\n"
+                    f"CRITICAL: Do NOT compress or omit mathematical steps, mechanisms, formulas, or worked explanations.\n"
+                    f"Ensure all math is strictly enclosed in standard LaTeX delimiters ($...$ or $$...$$)."
+                )
+                if page_text:
+                    prompt_text += f"\n\nExtracted Text for Page {page_idx + 1}:\n{page_text[:4000]}"
+
+                user_content_blocks = [
+                    {"type": "text", "text": prompt_text},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+                    }
+                ]
+
+                data = {
+                    "model": "qwen/qwen3.6-27b",
                     "messages": [
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Analyze the document text and generate the hierarchical mindmap JSON:\n\n{all_extracted_text[:12000]}"}
+                        {"role": "user", "content": user_content_blocks}
                     ],
                     "temperature": 0.2,
-                    "max_tokens": 4096
+                    "max_tokens": 2500
                 }
-                fallback_resp = await client.post(
+
+                logger.info(f"Processing visual Page {page_idx + 1}/{total_pages} via 'qwen/qwen3.6-27b'...")
+                page_resp = await client.post(
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers=headers,
-                    json=fallback_payload,
+                    json=data,
                     timeout=90.0
                 )
-                if fallback_resp.status_code == 200:
-                    raw_fallback = fallback_resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
-                    mindmap_data = repair_and_parse_json(raw_fallback)
-                    response.headers["X-Model-Used"] = "openai/gpt-oss-120b (Vision Text Fallback)"
-                    response.headers["X-Model-Routed"] = "true"
-                    response.headers["Access-Control-Expose-Headers"] = "X-Model-Used, X-Model-Routed"
-                    return mindmap_data
 
-            if resp.status_code != 200:
-                logger.error(f"Groq Vision API error: {resp.status_code} - {resp.text[:200]}")
-                raise HTTPException(
-                    status_code=resp.status_code,
-                    detail=f"Groq Vision error ({resp.status_code}): {resp.text[:150]}"
-                )
+                # Fallback to fast text LPU model if rate-limited or payload limit reached
+                if page_resp.status_code in [413, 429]:
+                    logger.warning(f"Groq Vision returned status {page_resp.status_code} on Page {page_idx + 1}. Falling back to 'openai/gpt-oss-120b' text mode.")
+                    model_used_name = "openai/gpt-oss-120b (Vision Text Fallback)"
+                    fallback_data = {
+                        "model": "openai/gpt-oss-120b",
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": f"Analyze Page {page_idx + 1} text and output hierarchical mindmap JSON:\n\n{page_text or prompt_text}"}
+                        ],
+                        "temperature": 0.2,
+                        "max_tokens": 2500
+                    }
+                    page_resp = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers=headers,
+                        json=fallback_data,
+                        timeout=90.0
+                    )
 
-            resp_json = resp.json()
-            choices = resp_json.get("choices", [])
-            if not choices:
-                raise HTTPException(status_code=500, detail="Groq Vision returned an empty response.")
+                if page_resp.status_code == 200:
+                    raw_content = page_resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+                    parsed_submap = repair_and_parse_json(raw_content)
+                    page_submaps.append(parsed_submap)
+                else:
+                    logger.warning(f"Page {page_idx + 1} generation failed with status {page_resp.status_code}: {page_resp.text[:120]}")
+                    page_submaps.append({
+                        "id": f"page_{page_idx + 1}",
+                        "label": f"Page {page_idx + 1} Overview",
+                        "summary": f"### Core Concept\n- **Overview**: Page {page_idx + 1} conceptual summary.",
+                        "children": []
+                    })
 
-            raw_content = choices[0].get("message", {}).get("content", "")
-            mindmap_data = repair_and_parse_json(raw_content)
+        if not page_submaps:
+            raise HTTPException(status_code=500, detail="Failed to generate mindmap from visual pages.")
 
-            response.headers["X-Model-Used"] = "qwen/qwen3.6-27b (Vision Mode)"
+        # Single page document
+        if len(page_submaps) == 1:
+            final_map = sanitize_mindmap_math(page_submaps[0])
+            await enrich_mindmap_with_images(final_map, max_images=6)
+            response.headers["X-Model-Used"] = model_used_name
             response.headers["X-Model-Routed"] = "false"
             response.headers["Access-Control-Expose-Headers"] = "X-Model-Used, X-Model-Routed"
+            return final_map
 
-            return mindmap_data
+        # Multi-page document: consolidate under master root
+        first_label = page_submaps[0].get("label", "Document Overview")
+        consolidated_root = {
+            "id": "root",
+            "label": first_label,
+            "summary": consolidate_summaries(page_submaps),
+            "children": []
+        }
+
+        for i, sub_map in enumerate(page_submaps):
+            unique_sub_map = make_ids_unique(sub_map, f"page_{i+1}")
+            part_label = unique_sub_map.get("label", f"Page {i+1}")
+            if part_label == f"root_page_{i+1}" or part_label == "Central Topic":
+                part_label = f"Page {i+1}"
+            else:
+                part_label = f"Page {i+1}: {part_label}"
+            unique_sub_map["label"] = part_label
+            consolidated_root["children"].append(unique_sub_map)
+
+        final_map = sanitize_mindmap_math(consolidated_root)
+        await enrich_mindmap_with_images(final_map, max_images=6)
+
+        response.headers["X-Model-Used"] = model_used_name
+        response.headers["X-Model-Routed"] = "false"
+        response.headers["Access-Control-Expose-Headers"] = "X-Model-Used, X-Model-Routed"
+        return final_map
 
     except HTTPException as http_exc:
         raise http_exc
@@ -1273,7 +1354,7 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
                 
             # If there is only one chunk, return it directly
             if len(sub_maps) == 1:
-                final_map = sub_maps[0]
+                final_map = sanitize_mindmap_math(sub_maps[0])
                 await enrich_mindmap_with_images(final_map, max_images=6)
                 return final_map
                 
@@ -1303,8 +1384,9 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
                 
                 consolidated_root["children"].append(unique_sub_map)
                 
-            await enrich_mindmap_with_images(consolidated_root, max_images=6)
-            return consolidated_root
+            final_consolidated = sanitize_mindmap_math(consolidated_root)
+            await enrich_mindmap_with_images(final_consolidated, max_images=6)
+            return final_consolidated
 
             
     except HTTPException as http_exc:
