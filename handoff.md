@@ -1,45 +1,43 @@
 # Handoff Document
 
 ## Executive Summary
+
 1. **Production-Grade AST Math & Markdown Rendering Engine**:
    - **AST Compilation Architecture**: Migrated `MathRenderer.tsx` from custom regex replacement to an industry-standard Abstract Syntax Tree (AST) pipeline powered by `react-markdown`, `remark-math`, `rehype-katex`, and `remark-gfm`.
-   - **KaTeX Copy-Paste Duplication Fix (`output: 'html'`)**:
-     - Configured KaTeX to output pure HTML (`output: 'html'`) rather than `htmlAndMathml`. This eliminates duplicated characters when copying rendered formulas from node cards and summaries (e.g. preventing `P Pt = P 0 e r t = P 0 e rt`).
+   - **KaTeX Copy-Paste Duplication Fix (`output: 'html'`)**: Pure HTML rendering prevents duplicated characters when copying formulas from node cards and summaries.
    - **Backend Math Syntax Validator & Recursive Sanitizer (`sanitize_mindmap_math`)**:
-     - Added `repair_math_syntax_backend` and `sanitize_mindmap_math` in `backend/main.py` to recursively validate and heal all node summaries and labels before returning JSON to the client.
      - Auto-heals broken expressions like `a[x+\frac{b}{2a}$$^2`, missing fraction exponents (`x+\frac{b}{2a}^2 \to \left(x+\frac{b}{2a}\right)^2`), unparenthesized completing-the-square clauses, and step markers `{2}:$$`.
-   - **Mandatory Multi-Node Hierarchy Rule & Multi-Child Schema Templates**:
-     - Replaced flat single-node schema examples with fully populated 5+ child-node templates in all subject system prompts (`math`, `physics`, `history`, `geography`, `general`).
-     - Enforced the **Mandatory Multi-Node Hierarchy Rule**: root node must only contain the document title and executive thesis, and MUST branch into 4 to 8 distinct child nodes in `"children"` (never collapsing multiple topics into a single root node).
-   - **1-Page Intervaled Visual Chunking Pipeline (`/api/generate-mindmap-vision`)**:
-     - Implemented 1-Page Visual Chunking: processes each PDF page as an individual visual chunk (96 DPI JPEG).
-     - Intervals requests by 1.5s to stay safely below Groq's 8,000 TPM limit.
-     - Merges child nodes from each visual page under a consolidated master root and runs full backend math sanitization.
-     - Includes automatic fast-text fallback to `openai/gpt-oss-120b` on any rate/TPM limit.
-   - **Resilient Regex Child-Node Extractor in `repair_and_parse_json`**:
-     - Upgraded `repair_and_parse_json` in `backend/main.py` with an AST/regex node block extractor. If `json.loads` encounters any syntax anomaly inside a formula, all child nodes are cleanly extracted from the raw response and preserved instead of defaulting to an empty `children: []` list.
-   - **Parenthesized Math & Raw Command Detection**: Auto-converts parenthesized math expressions like `(f(x)=a^{x})`, `((e^{rt}))`, `(a>1)`, `(0<a<1)`, `(a^x=e^{x\ln a})`, `(\frac{d}{dx}a^x=a^x\ln a)` and standalone commands like `\to` into standard `$ ... $` AST math nodes without colliding with `\bigl(` or English phrases.
-   - **Conflict-Free Rendering of Substitutions & Multi-Formulas**: Full support for continuous explanatory text, variable substitutions, and multi-line derivations.
-   - **Unicode & Unwrapped Math Normalization**: Converts Unicode symbols (`–`, `—`, `×`, `÷`, `±`, `≠`, `≤`, `≥`, `≈`, `π`, `θ`, `Δ`, `√`, `∞`, `→`, `⇒`, `²`, `³`, `\degree`, `°`) and auto-wraps unwrapped equations into standard LaTeX math AST nodes.
-   - **Clean Inline & Block Component Modes**: `inline` mode for canvas node cards and panel headers; Block mode for rich summaries with styled Tailwind typography.
-   - **Backend LaTeX Escaping & System Prompts**: `backend/main.py` sanitizes unescaped backslashes before `json.loads(..., strict=False)` and strictly instructs LLMs across all subject prompts to format math in `$inline$` and `$$block$$` delimiters while explicitly forbidding raw parentheses (`(f(x)=a^x)`) or un-delimited backslashes (`\to`).
+     - Recursively runs across all mindmap nodes before returning JSON to the client.
+   - **Fragmented Delimiter & Unclosed Macro Auto-Healing**:
+     - Automatically repairs leading commands outside math delimiters: `\Delta$(k)>0$` $\to$ `$\Delta(k) > 0$`.
+     - Automatically absorbs unbracketed discriminant statements: `\Delta(k) > 0` $\to$ `$\Delta(k) > 0$`.
+     - Reconstructs scrambled PDF vertical fraction text into canonical surd rationalization identities: `For $\frac{A}{\sqrt{p} + \sqrt{q}}$, multiply numerator and denominator by $\frac{\sqrt{p} - \sqrt{q}}{\sqrt{p} - \sqrt{q}}$`.
 
-2. **Collapsed Mindmap Initialization & Progressive Expansion**:
-   - **Default Collapsed State**: When a user creates/generates a new document (or selects a document), the mindmap initializes with `expandedIds = new Set()`, displaying only the central Root Node with interactive `+` expansion controls.
-   - **On-Demand Progressive Disclosure**: Users click `+` on any node to expand its child branches, and click `−` to collapse subtrees as desired.
-   - **Fixed Camera Re-centering on Expansion**: Camera view and zoom position now stay firmly in place when expanding/collapsing nodes. Centering to root is strictly constrained via `lastCenteredDocIdRef` to only trigger when a different document is loaded.
-   - **Quick Action Controls**: Added "Expand All" and "Collapse All" buttons to the topbar header alongside "Undo" and "Reset Workspace".
+2. **Syllabus-Aligned Revision Schemas & Dynamic Topic Naming**:
+   - Refactored all system prompts (`math`, `physics`, `history`, `geography`, `general`) specifically for **Secondary Revision Notes**.
+   - Replaced academic jargon ("Main Thesis", "Professor", "Architectural Framework") with practical, exam-focused headers:
+     - `### Core Concept & Exam Rule` $\to$ **Key Principle** & **Step-by-Step Method** & **Exam Pitfalls & Conditions**.
+     - `### Formulas & Identities` $\to$ clean display equations and symbol definitions.
+     - `### Worked Exam Example` $\to$ concrete problem walkthroughs with intermediate substitutions and final answers.
+   - **Specific Root Topic Naming**: Root node labels now dynamically state the exact academic topic name (e.g. *Algebraic Foundations & Quadratic Functions*, *Kinematics & Dynamics*) without generic `"Document Overview"` or `"O-Level"` prefixes.
 
-3. **Full Verification**:
-   - Tested backend JSON parsing on math responses containing `\frac`, `\sqrt`, `\Delta`, `\times`, `\theta`, `\beta`, `\neq`, `\nabla`, `\right`, `\begin{aligned}`; all test assertions passed.
-   - Tested KaTeX formula rendering across all standard delimiter formats; 100% passed.
-   - Verified TypeScript compilation and production Vite build (0 errors, 363ms build time).
+3. **1-Page Intervaled Visual Chunking & Direct Child Promotion**:
+   - In `/api/generate-mindmap-vision`, multi-page documents are processed page-by-page (1 page per request at 96 DPI JPEG).
+   - Requests are intervaled by **1.5s** to stay safely below Groq's 8,000 TPM limit.
+   - **Direct Child Promotion (Zero Wrapper Nodes)**: Subtopic branches from each page are promoted directly as top-level children of the master root, eliminating artificial intermediate wrapper cards.
+   - **Calibrated Token Limits**: Token budgets are calibrated per model (2500 for `openai/gpt-oss-120b`, 2000 for `qwen/qwen3.6-27b`) with fast fallback to `openai/gpt-oss-120b` (30k TPM) to prevent 429 rate limits.
+
+4. **Collapsed Mindmap Initialization & Progressive Expansion**:
+   - Mindmaps initialize in a clean collapsed state with interactive `+` expansion controls.
+   - Camera zoom and viewport remain stable on expansion/collapse.
+   - Topbar includes "Expand All" and "Collapse All" quick-action controls.
 
 ## Active State of Codebase Files
-- [`frontend/src/components/MathRenderer.tsx`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/frontend/src/components/MathRenderer.tsx): Upgraded KaTeX & Markdown renderer with complete delimiter support, corrupted sequence repair, standalone formula parsing, and inline card mode.
-- [`frontend/src/components/MindmapCanvas.tsx`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/frontend/src/components/MindmapCanvas.tsx): Node cards render titles via `MathRenderer`; fixed `isExpanded` condition to respect empty/custom `expandedIds` sets.
-- [`frontend/src/App.tsx`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/frontend/src/App.tsx): Configured `handleMindmapGenerated` and `handleSelectDocument` to open in collapsed form (`new Set()`), added `handleExpandAll` and `handleCollapseAll` topbar controls, and rendered Details Panel titles with `MathRenderer`.
-- [`backend/main.py`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/backend/main.py): Comprehensive `sanitize_json_latex` and resilient `repair_and_parse_json` with `strict=False`.
+- [`frontend/src/components/MathRenderer.tsx`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/frontend/src/components/MathRenderer.tsx): Upgraded KaTeX & Markdown AST renderer with delimiter auto-healing, sentence extraction, and inline card mode.
+- [`frontend/src/components/MindmapCanvas.tsx`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/frontend/src/components/MindmapCanvas.tsx): Node cards render titles via `MathRenderer`; interactive expansion controls.
+- [`frontend/src/App.tsx`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/frontend/src/App.tsx): Document handling, topbar controls, and vision model selection.
+- [`backend/main.py`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/backend/main.py): Backend LaTeX validation, syllabus prompts, 1-page visual chunking, rate-limit spacing, and child node promotion.
 
-## Immediate Next Steps
-- System fully operational with math formula rendering and on-demand progressive mindmap expansion.
+## Verification
+- Automated test suite passed all assertions for delimiter healing, surd reconstruction, completing-the-square repair, and tree consolidation.
+- Production TypeScript build (`npm run build`) completed successfully with 0 errors.
