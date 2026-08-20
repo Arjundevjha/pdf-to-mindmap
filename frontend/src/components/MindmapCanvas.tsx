@@ -1,4 +1,4 @@
-import { useMemo, useEffect } from 'react';
+import { useMemo, useEffect, useRef } from 'react';
 import { 
   ReactFlow, 
   Background, 
@@ -13,6 +13,7 @@ import {
 import type { Node, Edge } from '@xyflow/react';
 import dagre from '@dagrejs/dagre';
 import '@xyflow/react/dist/style.css';
+import { MathRenderer } from './MathRenderer';
 
 // Unified pure hierarchical node interface
 export interface MindmapNode {
@@ -92,10 +93,12 @@ function FlatCustomNode({ data }: { data: FlatCustomNodeData }) {
 
       {/* Node Title & Expand/Collapse Button */}
       <div className="flex items-center justify-between flex-1 gap-2">
-        <div className="flex-1 py-0.5">
-          <span className="text-slate-800 text-xs font-semibold leading-normal font-sans block select-none">
-            {data.label}
-          </span>
+        <div className="flex-1 py-0.5 overflow-hidden">
+          <MathRenderer 
+            content={data.label} 
+            inline 
+            className="text-slate-800 text-xs font-semibold leading-normal font-sans block select-none" 
+          />
         </div>
 
         {data.hasChildren && (
@@ -182,6 +185,7 @@ function MindmapCanvasInner({
   
   const { setCenter } = useReactFlow();
   const nodeTypes = useMemo(() => ({ custom: FlatCustomNode }), []);
+  const lastCenteredDocIdRef = useRef<string | null>(null);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -205,8 +209,8 @@ function MindmapCanvasInner({
     const edgeList: Array<{ id: string; source: string; target: string }> = [];
 
     function traverse(node: MindmapNode) {
-      // Guaranteed visibility: expand by default if expandedIds is empty or contains the node
-      const isExpanded = expandedIds.size === 0 || expandedIds.has(node.id);
+      // Only expand if explicitly present in expandedIds set
+      const isExpanded = expandedIds.has(node.id);
       const hasChildren = Boolean(node.children && node.children.length > 0);
       const hasImage = Boolean(node.imageUrl);
 
@@ -280,18 +284,21 @@ function MindmapCanvasInner({
     setEdges(flowEdges);
   }, [flowNodes, flowEdges, setNodes, setEdges]);
 
-  // Whenever the active mindmap is loaded or changed, orient camera smoothly onto the root node
+  // Center camera onto the root node ONLY ONCE when a new or different document is loaded
   useEffect(() => {
     if (!mindmap || flowNodes.length === 0) return;
 
-    const rootNode = flowNodes.find(n => n.id === mindmap.id) || flowNodes[0];
-    if (rootNode && rootNode.position) {
-      const timer = setTimeout(() => {
-        setCenter(rootNode.position.x + 120, rootNode.position.y + 28, { zoom: 1.0, duration: 400 });
-      }, 50);
-      return () => clearTimeout(timer);
+    if (lastCenteredDocIdRef.current !== mindmap.id) {
+      lastCenteredDocIdRef.current = mindmap.id;
+      const rootNode = flowNodes.find(n => n.id === mindmap.id) || flowNodes[0];
+      if (rootNode && rootNode.position) {
+        const timer = setTimeout(() => {
+          setCenter(rootNode.position.x + 120, rootNode.position.y + 28, { zoom: 1.0, duration: 400 });
+        }, 50);
+        return () => clearTimeout(timer);
+      }
     }
-  }, [mindmap?.id, flowNodes.length, setCenter]);
+  }, [mindmap?.id, flowNodes, setCenter]);
 
   if (!mindmap) {
     return (

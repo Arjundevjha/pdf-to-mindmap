@@ -3,8 +3,9 @@ import json
 import logging
 import re
 import random
+import base64
 from typing import Optional, List
-from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Request, Response
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body, Request, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -173,7 +174,7 @@ def consolidate_summaries(sub_maps: list[dict]) -> str:
 
 class MindmapGenerateRequest(BaseModel):
     text: str
-    model: Optional[str] = "llama-3.3-70b-versatile"
+    model: Optional[str] = "openai/gpt-oss-120b"
     subject: Optional[str] = "general"
 
 
@@ -197,14 +198,37 @@ def sanitize_json_latex(s: str) -> str:
     Escapes unescaped LaTeX backslashes inside JSON strings so json.loads
     does not fail or corrupt LaTeX commands into ASCII control characters.
     """
-    # 1. Escape unescaped backslashes before LaTeX macro names that are not standard JSON escapes
-    s = re.sub(r"(?<!\\)\\(?![\"\\/bfnrtu])([a-zA-Z]+)", r"\\\\\1", s)
-    
-    # 2. Specifically fix LaTeX keywords that start with JSON escape letters (f, t, b, r, n)
-    latex_keywords = ["frac", "theta", "times", "tau", "text", "tan", "to", "beta", "bar", "binom", "bullet", "rho", "right", "rangle", "root", "nu", "neq", "nabla", "degree"]
-    for kw in latex_keywords:
+    if not s:
+        return s
+
+    # 0. Replace raw ASCII control bytes that may have been parsed or injected
+    s = s.replace('\x0c', r'\\f').replace('\x08', r'\\b').replace('\x0b', r'\\v')
+
+    # 1. Fix LaTeX macros starting with standard JSON escape letters (b, f, n, r, t, u)
+    latex_escaped_keywords = [
+        # b
+        "beta", "bar", "begin", "mathbf", "boldsymbol", "bmod", "binom", "bullet", "bmatrix", "bbox",
+        # f
+        "frac", "forall", "flat",
+        # n
+        "nabla", "neq", "nu", "notin", "norm", "not", "natural",
+        # r
+        "rho", "right", "rangle", "root", "rightarrow", "Rightarrow", "Re",
+        # t
+        "theta", "times", "tau", "text", "tan", "tanh", "to", "tilde", "tag", "triangle", "top", "textbf", "textit", "therefore",
+        # u
+        "upsilon", "underbrace", "underline", "uparrow", "Uparrow"
+    ]
+    for kw in latex_escaped_keywords:
+        # Match single backslash followed by keyword
         s = re.sub(r"(?<!\\)\\" + kw + r"\b", r"\\\\" + kw, s)
-        
+
+    # 2. Escape any unescaped backslash before any letter not part of a valid JSON escape sequence (\" \\ \/ \b \f \n \r \t \u[0-9a-fA-F]{4})
+    s = re.sub(r"(?<!\\)\\(?![\"\\/bfnrt]|u[0-9a-fA-F]{4})([a-zA-Z]+)", r"\\\\\1", s)
+
+    # 3. Escape LaTeX symbol commands that are invalid JSON escapes: \, \; \! \{ \} \_ \^ \% \& \|
+    s = re.sub(r"(?<!\\)\\([,;!#$%&~_^|(){}[\]])", r"\\\\\1", s)
+
     return s
 
 def repair_and_parse_json(response_text: str) -> dict:
@@ -218,7 +242,7 @@ def repair_and_parse_json(response_text: str) -> dict:
     
     # 1. Try direct parsing first
     try:
-        data = json.loads(cleaned)
+        data = json.loads(cleaned, strict=False)
         if isinstance(data, dict) and "id" in data and "label" in data and "children" in data:
             return data
     except Exception:
@@ -262,7 +286,7 @@ def repair_and_parse_json(response_text: str) -> dict:
             repaired += ']'
 
     try:
-        data = json.loads(repaired)
+        data = json.loads(repaired, strict=False)
         if isinstance(data, dict):
             if "id" not in data: data["id"] = "root"
             if "label" not in data: data["label"] = "Section Overview"
@@ -403,25 +427,30 @@ def get_system_prompt(subject: str) -> str:
 Your objective is to analyze the mathematical text and transform it into an in-depth, rigorous, highly comprehensive hierarchical mindmap.
 
 CRITICAL MATHEMATICAL & DEPTH RULES:
-1. STRICT DEPTH INVARIANT (NO ONE-LINERS):
-   - Every node MUST be exhaustive and detailed. Do NOT output shallow or single-sentence summaries.
+1. STRICT DEPTH & COMPLETENESS INVARIANT (NEVER COMPROMISE ON CONTENT):
+   - Every node MUST be exhaustive, rigorous, and fully detailed. Do NOT output shallow, abbreviated, or single-sentence summaries.
+   - NEVER cut short, compress, or omit mathematical steps, intermediate algebra, derivations, proofs, boundary conditions, or worked calculations.
    - Thoroughly explain underlying derivations, geometric intuition, algebraic conditions (e.g. domain restrictions, discriminant $\\Delta = b^2 - 4ac$, asymptotes, boundary cases), and step-by-step calculation workflows from the text.
-   - Include concrete numerical worked examples showing exact step-by-step algebra.
-2. LaTeX Formula Standard: Every formula, variable, and expression MUST be formatted in standard LaTeX:
-   - Inline expressions: $x$, $\\theta$, $\\int_a^b f(x)dx$, $\\lim_{x \\to 0}$, $\\sqrt{b^2 - 4ac}$
-   - Block equations: $$f(x) = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$
+   - Include complete concrete numerical worked examples showing every intermediate algebraic step and substitution.
+2. LaTeX Formula Standard (MANDATORY DELIMITERS):
+   - Every formula, equation, rule, function, variable, derivative, and operator MUST be wrapped in standard dollar-sign LaTeX delimiters:
+     * Inline expressions: $f(x) = a^x$, $a > 1$, $0 < a < 1$, $a^x = e^{x\\ln a}$, $\\frac{d}{dx}[a^x] = a^x\\ln a$, $e^{rt}$, $\\to$, $\\log_a(x/y) = \\log_a x - \\log_a y$, $\\int_a^b f(x)dx$, $\\Delta = b^2 - 4ac$
+     * Block display equations: $$\\log_a\\left(\\frac{x}{y}\\right) = \\log_a x - \\log_a y$$ or $$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$
+   - STRICT FORBIDDEN PATTERNS:
+     * NEVER wrap math formulas in regular parentheses like '(f(x)=a^x)' or '((e^{rt}))' or '(a>1)' — ALWAYS write '$f(x)=a^x$', '$e^{rt}$', '$a>1$'.
+     * NEVER leave raw LaTeX commands like '\\to', '\\frac', '\\ln' without '$' delimiters — ALWAYS write '$\\to$', '$\\frac{...}{...}$', '$\\ln a$'.
 3. Plain-English Explanation: Always accompany every equation with a breakdown of its conceptual/geometric meaning and variable definitions.
 4. MANDATORY HIERARCHY: Break down the document into 3 to 6 distinct child nodes representing core subtopics, theorems, and proofs.
 5. Summary Structure (Use rich multi-bullet markdown format):
    ### Core Mathematical Concept
-   - **Mathematical Principle**: [Comprehensive 2-3 sentence intuition of the theorem or principle]
-   - **Key Mechanism & Derivation**: [Step-by-step mathematical logic, algebraic derivation, or proof breakdown]
+   - **Mathematical Principle**: [Comprehensive 2-3 sentence intuition of the theorem, logarithm rule, or principle]
+   - **Key Mechanism & Derivation**: [Step-by-step mathematical logic, algebraic derivation, or proof breakdown with $...$ delimiters]
    - **Conditions & Edge Cases**: [Domain restrictions, singular points, discriminant conditions]
 
    ### Formulas, Derivations & Variables
    - **Primary Formulation**: $$[Block LaTeX Formula]$$
-   - **Variable & Symbol Definitions**: [Detailed breakdown of symbols: $x$, $y$, coefficients, constants, domain]
-   - **Key Identities & Equivalent Forms**: [Alternative forms, factored representations, vertex form, trigonometric identities]
+   - **Variable & Symbol Definitions**: [Detailed breakdown of symbols: $x$, $y$, base $a$, coefficients, constants, domain]
+   - **Key Identities & Equivalent Forms**: [Alternative forms, quotient/product rules, change of base, factored representations]
 
    ### Worked Problem & Practical Application
    - **Step-by-Step Worked Example**: [Concrete numerical walkthrough showing algebraic substitution and final solution]
@@ -431,13 +460,13 @@ JSON OUTPUT SCHEMA:
 Output ONLY a single valid JSON object strictly matching this schema:
 {
   "id": "root",
-  "label": "Quadratic Functions & Equations",
-  "summary": "### Core Mathematical Concept\\n- **Mathematical Principle**: Second-order polynomial functions describe non-linear relationships with constant second differences, forming parabolic geometric curves.\\n- **Key Mechanism & Derivation**: Deriving the general quadratic formula via completing the square on $ax^2 + bx + c = 0$ yields solutions for all real and complex roots.\\n- **Conditions & Edge Cases**: Valid for $a \\\\neq 0$. If $a > 0$, the parabola opens upward with a global minimum; if $a < 0$, it opens downward with a global maximum.\\n\\n### Formulas, Derivations & Variables\\n- **Primary Formulation**: $$x = \\\\frac{-b \\\\pm \\\\sqrt{b^2 - 4ac}}{2a}$$\\n- **Variable & Symbol Definitions**: $a, b, c$ are real coefficients ($a \\\\neq 0$), $x$ represents the independent variable.\\n- **Discriminant Analysis**: $\\\\Delta = b^2 - 4ac$ dictates root geometry: $\\\\Delta > 0$ (two distinct real roots), $\\\\Delta = 0$ (one repeated real root), $\\\\Delta < 0$ (complex conjugate roots).\\n\\n### Worked Problem & Practical Application\\n- **Step-by-Step Worked Example**: For $f(x) = x^2 - 4$, setting $f(x) = 0 \\\\implies (x-2)(x+2) = 0$, yielding roots $x = \\\\pm 2$ and vertex minimum at $(0, -4)$.\\n- **Real-World / Scientific Application**: Trajectory modeling in aerospace ballistics, optics focal points, and profit optimization models.",
+  "label": "Exponential Functions & Growth",
+  "summary": "### Core Mathematical Concept\\n- **Mathematical Principle**: Exponential functions model continuous multiplication where rate of change is proportional to current value.\\n- **Key Mechanism & Derivation**: For $f(x) = a^x$, base conversion yields $a^x = e^{x\\\\ln a}$, giving derivative $\\\\frac{d}{dx}[a^x] = a^x\\\\ln a$.\\n- **Conditions & Edge Cases**: If $a > 1 \\\\implies$ exponential growth; if $0 < a < 1 \\\\implies$ exponential decay.\\n\\n### Formulas, Derivations & Variables\\n- **Primary Formulation**: $$a^x = e^{x\\\\ln a}$$\\n- **Variable & Symbol Definitions**: $a > 0$ is base constant, $x$ is independent variable exponent.\\n\\n### Worked Problem & Practical Application\\n- **Step-by-Step Worked Example**: For continuous compounding $A(t) = P e^{rt}$, with $P = 1000, r = 0.05, t = 2$, $A(2) = 1000 e^{0.10} \\\\approx 1105.17$.\\n- **Real-World / Scientific Application**: Population dynamics, viral spread, radioactive decay half-life, and financial growth.",
   "children": [
     {
       "id": "child-1",
-      "label": "Discriminant & Nature of Roots",
-      "summary": "### Core Mathematical Concept\\n- **Mathematical Principle**: The discriminant $\\\\Delta$ determines the number and nature of roots without calculating full solutions.\\n- **Key Mechanism & Derivation**: Derives directly from the radicand $\\\\sqrt{b^2 - 4ac}$ in the quadratic formula.\\n\\n### Formulas, Derivations & Variables\\n- **Primary Formulation**: $$\\Delta = b^2 - 4 a c$$\\n- **Variable & Symbol Definitions**: $b^2$ is linear coefficient squared, $-4ac$ is the cross-product term.\\n\\n### Worked Problem & Practical Application\\n- **Step-by-Step Worked Example**: For $2x^2 + 4x + 2 = 0$, $\\\\Delta = 4^2 - 4(2)(2) = 16 - 16 = 0$, proving exactly one repeated real root $x = -1$.\\n- **Real-World / Scientific Application**: Used in control theory and resonance filters to test system stability.",
+      "label": "Derivatives of Exponentials",
+      "summary": "### Core Mathematical Concept\\n- **Mathematical Principle**: The derivative of $a^x$ scales by the natural logarithm constant $\\\\ln a$.\\n\\n### Formulas, Derivations & Variables\\n- **Primary Formulation**: $$\\frac{d}{dx}[a^x] = a^x\\\\ln a$$\\n\\n### Worked Problem & Practical Application\\n- **Step-by-Step Worked Example**: $\\\\frac{d}{dx}[2^x] = 2^x\\\\ln 2$.\\n- **Real-World / Scientific Application**: Signal decay analysis.",
       "children": []
     }
   ]
@@ -448,11 +477,14 @@ Output ONLY a single valid JSON object strictly matching this schema:
 Your objective is to analyze the physics text and convert it into an in-depth, rigorous, highly comprehensive hierarchical mindmap.
 
 CRITICAL PHYSICS & DEPTH RULES:
-1. STRICT DEPTH INVARIANT (NO ONE-LINERS):
-   - Every node MUST be exhaustive and detailed. Do NOT output shallow or single-sentence summaries.
+1. STRICT DEPTH & COMPLETENESS INVARIANT (NEVER COMPROMISE ON CONTENT):
+   - Every node MUST be exhaustive, rigorous, and fully detailed. Do NOT output shallow, abbreviated, or single-sentence summaries.
+   - NEVER cut short or omit physical derivations, vector breakdowns, dimensional analyses, or worked calculation steps.
    - Thoroughly explain first principles, force interactions, energy transfers, vector directions, conservation laws, and mathematical derivations from the text.
-   - Include concrete numerical calculations and real-world engineering setups.
+   - Include complete concrete numerical calculations and real-world engineering setups.
 2. LaTeX Equations with SI Units: Every physical law, kinematics equation, or field formula MUST use standard LaTeX ($inline$ and $$block$$) accompanied by explicit SI units ($m/s^2$, $N$, $J$, $W$, $V$, $\\Omega$).
+   - NEVER wrap equations in regular parentheses like '(v=u+at)' — ALWAYS use '$v = u + at$'.
+   - NEVER leave raw backslashed commands like '\\to', '\\approx' outside of '$' delimiters.
 3. Plain-English Intuition: Connect every equation to physical reality (cause, effect, energy balance).
 4. MANDATORY HIERARCHY: Break down the document into 3 to 6 distinct child nodes representing core subtopics, laws, and components.
 5. Summary Structure (Use rich multi-bullet markdown format):
@@ -474,20 +506,17 @@ JSON OUTPUT SCHEMA:
 Output ONLY a single valid JSON object strictly matching this schema:
 {
   "id": "root",
-  "label": "Kinematics & Dynamics of Motion",
-  "summary": "### Core Physical Principle\\n- **Physical Principle**: Kinematics mathematically describes the motion of bodies and systems without considering the forces causing the motion.\\n- **Underlying Mechanism**: Position, velocity, and acceleration are related through differential calculus as successive time-derivatives: $v(t) = \\\\frac{ds}{dt}$, $a(t) = \\\\frac{dv}{dt}$.\\n- **Conservation & Invariance**: In uniform gravitational fields without drag, mechanical energy $E_{mech} = E_k + E_p$ is strictly conserved throughout flight.\\n\\n### Governing Equations & Units\\n- **Governing Law**: $$s(t) = u t + \\\\frac{1}{2} a t^2$$\\n- **Variable Definitions & SI Units**: $s$ (displacement, $m$), $u$ (initial velocity, $m/s$), $v$ (final velocity, $m/s$), $a$ (acceleration, $m/s^2$), $t$ (time, $s$).\\n- **Dimensional Analysis**: $[s] = [L]$, $[u t] = [L T^{-1} \\\\cdot T] = [L]$, $[\\\\frac{1}{2} a t^2] = [L T^{-2} \\\\cdot T^2] = [L]$, confirming dimensional homogeneity.\\n\\n### Real-World Phenomenon & Application\\n- **Experimental Setup & Application**: Ballistics, aerospace launch trajectories, and vehicle braking distance certification.\\n- **Step-by-Step Worked Problem**: Launching vertically at $u = 20\\\\text{ m/s}$ under $g = 9.81\\\\text{ m/s}^2$ yields peak apogee $H = \\\\frac{u^2}{2g} = \\\\frac{400}{19.62} \\\\approx 20.39\\\\text{ m}$ and total flight time $T = \\\\frac{2u}{g} \\\\approx 4.08\\\\text{ s}$.",
+  "label": "Classical Mechanics & Kinematics",
+  "summary": "### Core Physical Principle\\n- **Physical Principle**: Projectile motion combines uniform horizontal velocity with accelerated vertical motion under gravity.\\n- **Underlying Mechanism**: Gravitational force acts downward ($F_g = mg$), producing constant downward acceleration $-g$, while horizontal acceleration is zero ($a_x = 0$).\\n\\n### Governing Equations & Units\\n- **Governing Law**: $$y(t) = v_0 t \\\\sin\\\\theta - \\\\frac{1}{2}gt^2$$\\n- **Variable Definitions & SI Units**: $v_0$ is initial velocity ($m/s$), $\\\\theta$ is launch angle ($^{\\\\circ}$), $g = 9.81\\\\text{ m/s}^2$.\\n\\n### Real-World Phenomenon & Application\\n- **Step-by-Step Worked Problem**: For $v_0 = 20\\\\text{ m/s}, \\\\theta = 45^{\\\\circ}$, $R = \\\\frac{v_0^2 \\\\sin(2\\\\theta)}{g} = \\\\frac{400}{9.81} \\\\approx 40.77\\\\text{ m}$.",
   "children": [
     {
       "id": "child-1",
-      "label": "Uniform Acceleration Equations",
-      "summary": "### Core Physical Principle\\n- **Physical Principle**: Uniform acceleration implies a constant rate of change of velocity over time.\\n- **Underlying Mechanism**: On a velocity-time graph, gradient represents constant acceleration $a = \\\\frac{\\\\Delta v}{\\\\Delta t}$, and area under the curve represents total displacement $s = \\\\int v dt$.\\n\\n### Governing Equations & Units\\n- **Governing Law**: $$v^2 = u^2 + 2 a s$$\\n- **Variable Definitions & SI Units**: $v$ (final velocity, $m/s$), $u$ (initial velocity, $m/s$), $a$ (acceleration, $m/s^2$), $s$ (displacement, $m$).\\n\\n### Real-World Phenomenon & Application\\n- **Experimental Setup & Application**: Runway takeoff distance design and vehicle crash safety barrier engineering.\\n- **Step-by-Step Worked Problem**: A car accelerating from $0$ to $28\\\\text{ m/s}$ at $a = 3.5\\\\text{ m/s}^2$ requires distance $s = \\\\frac{v^2}{2a} = \\\\frac{784}{7} = 112\\\\text{ m}$.",
+      "label": "Trajectory Equations",
+      "summary": "### Core Physical Principle\\n- **Physical Principle**: Horizontal and vertical components operate independently.\\n\\n### Governing Equations & Units\\n- **Governing Law**: $$x(t) = v_0 t \\\\cos\\\\theta$$\\n\\n### Real-World Phenomenon & Application\\n- **Step-by-Step Worked Problem**: Time of flight $T = \\\\frac{2v_0 \\\\sin\\\\theta}{g}$.",
       "children": []
     }
   ]
 }"""
-
-
-
 
     elif subject == "history":
         return """You are an expert historian and educational mindmap designer.
@@ -509,7 +538,14 @@ RULES FOR HISTORY:
    ### Physical Meaning & Application
    - **Historical Significance**: [Long-term legacy and modern relevance]
 
-JSON OUTPUT SCHEMA: Output ONLY a single valid JSON object (with "id", "label", "summary", "children")."""
+JSON OUTPUT SCHEMA:
+Output ONLY a single valid JSON object strictly matching this schema:
+{
+  "id": "root",
+  "label": "Industrial Revolution & Economic Shifts",
+  "summary": "### Core Concept\\n- **Historical Thesis**: The transition to mechanized manufacturing fundamentally restructured global economics, urbanization, and labor systems.\\n- **Causal Driver**: Steam power innovation and agricultural surpluses provided capital and workforce.\\n\\n### Key Details & Turning Points\\n- **Key Turning Point**: 1769 Watts steam engine patent catalyzed factory automation.\\n- **Actors & Factions**: Industrialists, craft guilds, and emerging labor unions.\\n\\n### Physical Meaning & Application\\n- **Historical Significance**: Established modern industrial capitalism and international trade corridors.",
+  "children": []
+}"""
 
     elif subject == "geography":
         return """You are an expert physical and human geography curriculum architect.
@@ -530,26 +566,44 @@ RULES FOR GEOGRAPHY:
    ### Physical Meaning & Application
    - **Significance**: [Environmental impact, resource management, hazard mitigation]
 
-JSON OUTPUT SCHEMA: Output ONLY a single valid JSON object (with "id", "label", "summary", "children")."""
+JSON OUTPUT SCHEMA:
+Output ONLY a single valid JSON object strictly matching this schema:
+{
+  "id": "root",
+  "label": "Plate Tectonics & Continental Drift",
+  "summary": "### Core Concept\\n- **Geographical Thesis**: Earth lithosphere is divided into rigid plates moving over the asthenosphere driven by mantle convection.\\n- **Key Mechanism**: Convection currents cause divergence, convergence, and transform faults.\\n\\n### Key Details\\n- **Spatial Pattern / Factors**: Ring of Fire accounts for over 75% of global volcanic activity.\\n- **Case Study**: Mid-Atlantic Ridge sea-floor spreading at $2-5\\\\text{ cm/year}$.\\n\\n### Physical Meaning & Application\\n- **Significance**: Seismic hazard mitigation and geothermal energy exploration.",
+  "children": []
+}"""
 
     else:
         return """You are an expert educational curriculum architect.
 Your objective is to analyze the document and construct a hierarchical, ADHD-friendly, scannable mindmap.
 
 RULES:
-1. Node Labels: 3-5 word concise summaries.
+1. Node Labels: 3-5 word concise summaries. If mentioning a formula, variable, or rule, wrap in LaTeX dollar delimiters (e.g. '$f(x) = a^x$', '$\\log_a(x/y) = \\log_a x - \\log_a y$').
 2. Scannable Bullet Format:
    ### Core Concept
    - **Main Thesis**: [1-2 sentence core intuition]
-   - **Key Mechanism**: [Step-by-step breakdown]
+   - **Key Mechanism**: [Step-by-step breakdown with LaTeX math notation in $...$ where applicable]
 
    ### Key Details
-   - **Key Term / Data**: [Definitions, facts, figures from text]
+   - **Key Term / Data**: [Definitions, facts, figures, formulas in $...$ from text]
 
    ### Physical Meaning & Application
    - **Significance & Application**: [Practical takeaway and broader context]
 
-JSON OUTPUT SCHEMA: Output ONLY a single valid JSON object (with "id", "label", "summary", "children")."""
+CRITICAL FORMATTING:
+- ALWAYS enclose every formula, equation, variable, and math operator in '$...$' (e.g. '$a > 1$', '$a^x = e^{x\\ln a}$', '$\\to$').
+- NEVER use plain parentheses '(f(x)=a^x)' or un-delimited backslashes '\\to' for math notation.
+
+JSON OUTPUT SCHEMA:
+Output ONLY a single valid JSON object strictly matching this schema:
+{
+  "id": "root",
+  "label": "Document Overview & Core Themes",
+  "summary": "### Core Concept\\n- **Main Thesis**: Primary conceptual takeaway from document.\\n- **Key Mechanism**: Step-by-step structural logic.\\n\\n### Key Details\\n- **Key Term / Data**: Core terminology and empirical evidence.\\n\\n### Physical Meaning & Application\\n- **Significance & Application**: Practical implications and broader context.",
+  "children": []
+}"""
 
 
 
@@ -761,6 +815,124 @@ async def upload_pdf(file: UploadFile = File(...)):
         logger.error(f"Error processing PDF file: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to process PDF: {str(e)}")
 
+@app.post("/api/generate-mindmap-vision")
+async def generate_mindmap_vision(
+    response: Response,
+    file: UploadFile = File(...),
+    subject: str = Form("general"),
+):
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="Groq API Key is not configured. Please set the GROQ_API_KEY environment variable."
+        )
+
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported for Vision processing.")
+
+    try:
+        # Read file bytes and render pages to PNG base64 in memory
+        file_bytes = await file.read()
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+
+        if len(doc) == 0:
+            raise HTTPException(status_code=400, detail="The uploaded PDF is empty.")
+
+        page_images_b64 = []
+        max_pages = min(len(doc), 5)
+        for i in range(max_pages):
+            page = doc[i]
+            # Render at 150 DPI for optimal clarity and reasonable payload size
+            pix = page.get_pixmap(dpi=150)
+            img_png = pix.tobytes("png")
+            page_images_b64.append(base64.b64encode(img_png).decode("utf-8"))
+
+        system_prompt = get_system_prompt(subject)
+        
+        user_content_blocks = [
+            {
+                "type": "text",
+                "text": (
+                    "Analyze the visual diagrams, flowcharts, mathematical/physical formulas, graphs, tables, "
+                    "and text on these document page(s). Synthesize BOTH the visual diagrams and text into an "
+                    "exhaustive, highly structured hierarchical mindmap JSON matching the requested schema. "
+                    "Ensure all formulas and equations are strictly formatted in standard LaTeX delimiters ($...$ for inline, $$...$$ for block)."
+                )
+            }
+        ]
+        for img_b64 in page_images_b64:
+            user_content_blocks.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{img_b64}"
+                }
+            })
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        data = {
+            "model": "qwen/qwen3.6-27b",
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content_blocks}
+            ],
+            "temperature": 0.2,
+            "max_tokens": 1800
+        }
+
+        logger.info(f"Sending Groq Vision request for {file.filename} ({len(page_images_b64)} pages) using model: 'qwen/qwen3.6-27b'")
+        
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=headers,
+                json=data,
+                timeout=90.0
+            )
+
+            if resp.status_code != 200:
+                logger.error(f"Groq Vision API error: {resp.status_code} - {resp.text[:200]}")
+                raise HTTPException(
+                    status_code=resp.status_code,
+                    detail=f"Groq Vision error ({resp.status_code}): {resp.text[:150]}"
+                )
+
+            resp_json = resp.json()
+            choices = resp_json.get("choices", [])
+            if not choices:
+                raise HTTPException(status_code=500, detail="Groq Vision returned an empty response.")
+
+            raw_content = choices[0].get("message", {}).get("content", "")
+            mindmap_data = repair_and_parse_json(raw_content)
+
+            response.headers["X-Model-Used"] = "qwen/qwen3.6-27b (Vision Mode)"
+            response.headers["X-Model-Routed"] = "false"
+            response.headers["Access-Control-Expose-Headers"] = "X-Model-Used, X-Model-Routed"
+
+            return mindmap_data
+
+    except HTTPException as http_exc:
+        raise http_exc
+    except Exception as e:
+        logger.error(f"Unexpected error in Vision processing: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process document with Vision: {str(e)}")
+
+# Equal Load Balancer: 5 active alternative models on Groq
+ALL_ALTERNATIVE_MODELS = [
+    "openai/gpt-oss-120b",
+    "groq/compound",
+    "qwen/qwen3.6-27b",
+    "groq/compound-mini",
+    "openai/gpt-oss-20b",
+]
+
+_load_balance_counter: int = 0
+_load_balance_lock = asyncio.Lock()
+
 @app.post("/api/generate-mindmap")
 async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
     api_key = os.environ.get("GROQ_API_KEY")
@@ -775,26 +947,29 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
     subject = payload.subject or "general"
     system_prompt = get_system_prompt(subject)
     
-    raw_model = payload.model or "llama-3.3-70b-versatile"
+    raw_model = payload.model or "openai/gpt-oss-120b"
     
-    # Map non-existent or deprecated model strings to valid Groq Cloud models
+    # Map deprecated or legacy model strings to active, supported Groq Cloud models
     MODEL_ALIASES = {
-        "meta-llama/llama-4-scout-17b-16e-instruct": "llama-3.3-70b-versatile",
-        "qwen/qwen3.6-27b": "llama-3.3-70b-versatile",
-        "qwen/qwen3-32b": "llama-3.3-70b-versatile",
-        "openai/gpt-oss-20b": "llama3-8b-8192",
-        "openai/gpt-oss-120b": "llama-3.3-70b-versatile",
-        "llama-3.2-11b-vision-preview": "llama3-8b-8192",
-        "llama-3.1-8b-instant": "llama-3.3-70b-versatile",
+        "llama-3.3-70b-versatile": "openai/gpt-oss-120b",
+        "llama-3.1-8b-instant": "openai/gpt-oss-20b",
+        "llama3-70b-8192": "openai/gpt-oss-120b",
+        "llama3-8b-8192": "openai/gpt-oss-20b",
+        "llama-3.2-11b-vision-preview": "openai/gpt-oss-20b",
+        "deepseek-r1-distill-llama-70b": "openai/gpt-oss-120b",
+        "meta-llama/llama-4-scout-17b-16e-instruct": "openai/gpt-oss-120b",
+        "mixtral-8x7b-32768": "groq/compound",
+        "gemma2-9b-it": "groq/compound-mini",
+        "qwen/qwen3-32b": "qwen/qwen3.6-27b",
     }
     selected_model = MODEL_ALIASES.get(raw_model, raw_model)
     word_count = len(payload.text.split())
     
-    # Adjust chunk size to 8,000 - 12,000 characters so completions stay safely within token limits
-    if selected_model in ["llama3-8b-8192", "auto-smart-routing"] or len(payload.text) > 24000:
-        chunk_size = 8000
+    # Adjust chunk size so completions and compound models stay safely within free-tier token limits
+    if selected_model in ["openai/gpt-oss-20b", "groq/compound", "groq/compound-mini", "auto-smart-routing", "auto-load-balanced"] or len(payload.text) > 20000:
+        chunk_size = 5000
     else:
-        chunk_size = 12000
+        chunk_size = 10000
         
     # Split full text into chunks (limit to maximum 5 chunks)
     chunks = split_text_into_chunks(payload.text, chunk_size=chunk_size)[:5]
@@ -805,28 +980,24 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
         "Content-Type": "application/json"
     }
     
-    ALL_FREE_TIER_MODELS = [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-        "openai/gpt-oss-120b",
-        "openai/gpt-oss-20b",
-    ]
+    ALL_FREE_TIER_MODELS = ALL_ALTERNATIVE_MODELS
 
     primary_model = selected_model
     is_routed = False
     
-    if selected_model == "auto-smart-routing":
+    # Distribute load equally across all 5 alternative models in round-robin fashion
+    if selected_model in ["auto-smart-routing", "auto-load-balanced", "equal-load-distribution"]:
         is_routed = True
-        primary_model = "llama-3.3-70b-versatile" if word_count >= 1200 else "llama-3.1-8b-instant"
-
-
-    # Distribute initial models across all available free tier models if routed, or use primary model
-    chunk_models = []
-    for idx in range(len(chunks)):
-        if is_routed:
-            chunk_models.append(ALL_FREE_TIER_MODELS[idx % len(ALL_FREE_TIER_MODELS)])
-        else:
-            chunk_models.append(primary_model)
+        global _load_balance_counter
+        async with _load_balance_lock:
+            start_idx = _load_balance_counter
+            _load_balance_counter = (_load_balance_counter + len(chunks)) % len(ALL_ALTERNATIVE_MODELS)
+        chunk_models = [
+            ALL_ALTERNATIVE_MODELS[(start_idx + idx) % len(ALL_ALTERNATIVE_MODELS)]
+            for idx in range(len(chunks))
+        ]
+    else:
+        chunk_models = [primary_model] * len(chunks)
 
     # Track last request time per model to space out requests and avoid rate limits
     model_last_request: dict[str, float] = {}
@@ -858,14 +1029,10 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
                     await asyncio.sleep(wait_time)
             model_last_request[current_model] = time.monotonic()
 
-            # Models like Llama-3 support json_object mode; OSS models prefer standard prompt mode
-            use_json_mode = "llama" in current_model.lower()
-
             for attempt in range(2):
                 try:
-                    # Groq free tier reserves prompt_tokens + max_tokens against TPM limit (6,000 TPM for 70B, 30,000 TPM for 8B)
-                    # Capping max_tokens to 2200 prevents 429 TPM reservation errors
-                    max_tokens = 2000 if "8b" in current_model.lower() else 2400
+                    # Comprehensive token budget (4096 tokens) so complex math derivations are never cut off
+                    max_tokens = 4096
                     data = {
                         "model": current_model,
                         "messages": [
@@ -875,11 +1042,9 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
                         "temperature": 0.2,
                         "max_tokens": max_tokens,
                     }
-                    if use_json_mode:
-                        data["response_format"] = {"type": "json_object"}
 
                     logger.info(f"Sending Groq API request for Chunk {index+1} using model: '{current_model}' (max_tokens={max_tokens}, Attempt {attempt+1})")
-                    resp = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data, timeout=40.0)
+                    resp = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data, timeout=90.0)
 
                     # On Rate Limit (429) or Payload/TPM Limit (413): switch to NEXT fallback model immediately
                     if resp.status_code in [413, 429]:
@@ -888,12 +1053,6 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
                         break
 
                     if resp.status_code != 200:
-                        resp_json = resp.json() if resp.content else {}
-                        error_code = resp_json.get("error", {}).get("code", "")
-                        if error_code == "json_validate_failed" and use_json_mode:
-                            logger.warning(f"JSON mode validation failed on model '{current_model}'. Retrying with standard text mode...")
-                            use_json_mode = False
-                            continue
                         logger.warning(f"Groq API error status {resp.status_code} ({resp.text[:120]}) on model '{current_model}' for Chunk {index+1}. Switching to fallback model...")
                         break
 

@@ -37,7 +37,7 @@ graph TD
     end
 
     subgraph External ["External Services"]
-        Groq["Groq Cloud LLM API (Llama 3.3 70B / 3.1 8B / Mixtral)"]
+        Groq["Groq Cloud LLM API (GPT-OSS 120B / Groq Compound / Qwen 3.6 27B / Compound Mini / GPT-OSS 20B)"]
         SupabaseDB["Supabase Cloud PostgreSQL / PostgREST"]
     end
 
@@ -88,9 +88,9 @@ sequenceDiagram
     BE->>BE: Select Model Pool (Smart Auto-Routing)
 
     par Parallel LLM Generation
-        BE->>Groq: Request Chunk 1 Mindmap (llama-3.3-70b-versatile)
-        BE->>Groq: Request Chunk 2 Mindmap (mixtral-8x7b-32768)
-        BE->>Groq: Request Chunk N Mindmap (llama-3.1-8b-instant)
+        BE->>Groq: Request Chunk 1 Mindmap (openai/gpt-oss-120b)
+        BE->>Groq: Request Chunk 2 Mindmap (qwen/qwen3.6-27b)
+        BE->>Groq: Request Chunk N Mindmap (openai/gpt-oss-20b)
     end
 
     Groq-->>BE: JSON Tree Chunk 1
@@ -162,10 +162,10 @@ sequenceDiagram
 
 #### 2. Distributed LLM Inference Engine (`/api/generate-mindmap`)
 * **Chunking Engine (`split_text_into_chunks`)**: Splits document text at logical sentence/paragraph boundaries into chunks of 15,000 to 30,000 characters (max 5 chunks).
-* **Smart Auto-Routing & Model Pools**:
-  * **Large Model Pool**: `llama-3.3-70b-versatile`, `mixtral-8x7b-32768`, `llama-3.1-8b-instant`.
-  * **Small Model Pool**: `llama-3.1-8b-instant`, `gemma2-9b-it`.
-  * **Routing Strategy**: Multi-chunk documents automatically distribute chunk requests across different models in the pool simultaneously. This drastically reduces single-model TPM rate limits while completing multi-page document processing in parallel.
+* **Equal Load Balancing & Model Pools**:
+  * **Flagship & Large Models**: `openai/gpt-oss-120b`, `groq/compound`, `qwen/qwen3.6-27b`.
+  * **Fast & High-Throughput Models**: `groq/compound-mini`, `openai/gpt-oss-20b`.
+  * **Equal Load Balancing Strategy**: All document chunks and independent generation requests are dynamically striped in an atomic round-robin sequence across all 5 models (`openai/gpt-oss-120b`, `groq/compound`, `qwen/qwen3.6-27b`, `groq/compound-mini`, `openai/gpt-oss-20b`), ensuring each model handles exactly 20% of the inference volume and preventing single-model rate limits.
 * **Non-Backtracking JSON Sanitization (`clean_json_string`)**: Uses fast string index locating (`find('{')` and `rfind('}')`) to extract valid JSON objects without encountering catastrophic regex backtracking on massive payloads.
 * **Exponential Backoff & Rate Limit Handling**: Detects HTTP `429` status codes and Groq TPM error responses; automatically retries up to 3 times with exponential backoff and randomized jitter.
 * **Mindmap Tree Consolidation (`consolidate_summaries` & `make_ids_unique`)**: Suffixes node IDs for each chunk (`part_1`, `part_2`...) to guarantee key uniqueness in React Flow, then attaches all sub-map roots under a master root node.
@@ -253,6 +253,6 @@ Configured for serverless deployment on Vercel:
 ## 7. Security, Rate Limiting & System Resilience
 
 1. **Path Traversal Protection**: FastAPI catch-all static route strictly resolves absolute paths and verifies target files remain inside `frontend/dist`.
-2. **TPM Rate Limit Bypass**: Multi-chunk document processing dynamically distributes requests across model pools (`llama-3.3-70b-versatile`, `mixtral-8x7b-32768`, `llama-3.1-8b-instant`), keeping per-model token requests well within free-tier rate limits.
+2. **TPM Rate Limit Bypass**: Multi-chunk document processing and individual requests dynamically distribute load equally across 5 active model pools (`openai/gpt-oss-120b`, `groq/compound`, `qwen/qwen3.6-27b`, `groq/compound-mini`, `openai/gpt-oss-20b`), keeping per-model token requests well within free-tier rate limits.
 3. **Structured Response Safeguards**: Prompts enforce JSON schema outputs. `clean_json_string` guarantees valid JSON parsing even when LLMs enclose output in Markdown code blocks or preamble conversational text.
 4. **React Flow Memory Safety**: Automatic node ID disambiguation (`make_ids_unique`) prevents duplicate key rendering collisions in the DOM during tree manipulation.

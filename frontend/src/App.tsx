@@ -13,9 +13,10 @@ import {
   X, 
   BookOpen, 
   Cpu, 
-  Undo2
+  Undo2,
+  UnfoldVertical,
+  FoldVertical
 } from 'lucide-react';
-
 
 // Document storage model
 export interface SavedDocument {
@@ -120,7 +121,7 @@ export default function App() {
 
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => {
     const saved = localStorage.getItem('pdf_mindmaps_expanded');
-    return saved ? new Set(JSON.parse(saved)) : new Set(['root']);
+    return saved ? new Set(JSON.parse(saved)) : new Set();
   });
 
   const [isFocusMode, setIsFocusMode] = useState<boolean>(() => {
@@ -132,12 +133,11 @@ export default function App() {
     const saved = localStorage.getItem('pdf_mindmaps_model');
     const validModels = [
       'auto-smart-routing',
-      'llama-3.3-70b-versatile',
-      'deepseek-r1-distill-llama-70b',
-      'mixtral-8x7b-32768',
-      'gemma2-9b-it',
-      'llama3-70b-8192',
-      'llama3-8b-8192'
+      'openai/gpt-oss-120b',
+      'groq/compound',
+      'qwen/qwen3.6-27b',
+      'groq/compound-mini',
+      'openai/gpt-oss-20b'
     ];
     return (saved && validModels.includes(saved)) ? saved : 'auto-smart-routing';
   });
@@ -357,22 +357,12 @@ export default function App() {
       userEmail: currentUserEmail || undefined
     };
 
-
     // Update local state for instant user feedback
     setDocuments(prev => [newDoc, ...prev]);
     setActiveDocId(newDoc.id);
 
-    // Auto-expand all nodes across the canvas so the user immediately sees the entire mindmap
-    const allNodeIds = new Set<string>();
-    const collectIds = (n: MindmapNode) => {
-      if (n.id) allNodeIds.add(n.id);
-      if (n.children && Array.isArray(n.children)) {
-        n.children.forEach(collectIds);
-      }
-    };
-    collectIds(mindmapData);
-
-    setExpandedIds(allNodeIds);
+    // Open in collapsed form by default - user expands branches on demand
+    setExpandedIds(new Set());
     setSelectedNode(mindmapData); // Auto-open Details Panel for the root node
     setUndoHistory([]);
 
@@ -409,21 +399,35 @@ export default function App() {
     setActiveDocId(docId);
     const targetDoc = userDocuments.find(d => d.id === docId);
     if (targetDoc && targetDoc.data) {
-      const allIds = new Set<string>();
-      const collect = (n: MindmapNode) => {
-        if (n.id) allIds.add(n.id);
-        if (n.children && Array.isArray(n.children)) {
-          n.children.forEach(collect);
-        }
-      };
-      collect(targetDoc.data);
-      setExpandedIds(allIds);
+      setExpandedIds(new Set());
       setSelectedNode(targetDoc.data);
     } else {
-      setExpandedIds(new Set(['root']));
+      setExpandedIds(new Set());
       setSelectedNode(null);
     }
     setUndoHistory([]);
+  };
+
+  // Expand all nodes in current active mindmap
+  const handleExpandAll = () => {
+    if (!activeDoc || !activeDoc.data) return;
+    setUndoHistory(prev => [...prev, Array.from(expandedIds)]);
+    const allIds = new Set<string>();
+    const collect = (n: MindmapNode) => {
+      if (n.id) allIds.add(n.id);
+      if (n.children && Array.isArray(n.children)) {
+        n.children.forEach(collect);
+      }
+    };
+    collect(activeDoc.data);
+    setExpandedIds(allIds);
+  };
+
+  // Collapse all nodes to collapsed state
+  const handleCollapseAll = () => {
+    if (!activeDoc || !activeDoc.data) return;
+    setUndoHistory(prev => [...prev, Array.from(expandedIds)]);
+    setExpandedIds(new Set());
   };
 
 
@@ -492,7 +496,7 @@ export default function App() {
     if (window.confirm("Are you sure you want to reset the workspace? This will clear all uploaded documents and history from the database.")) {
       setDocuments([]);
       setActiveDocId(null);
-      setExpandedIds(new Set(['root']));
+      setExpandedIds(new Set());
       setSelectedNode(null);
       setUndoHistory([]);
       
@@ -500,7 +504,7 @@ export default function App() {
       localStorage.clear();
       // Re-initialize default settings
       localStorage.setItem('pdf_mindmaps_focus_mode', 'false');
-      localStorage.setItem('pdf_mindmaps_model', 'llama-3.3-70b-versatile');
+      localStorage.setItem('pdf_mindmaps_model', 'auto-smart-routing');
       if (emailCache) {
         localStorage.setItem('pdf_mindmaps_user', emailCache); // Keep user authenticated
       }
@@ -723,14 +727,18 @@ export default function App() {
               onChange={(e) => setSelectedModel(e.target.value)}
               className="w-full text-xs bg-slate-50 border border-slate-200 text-slate-700 px-2.5 py-1.5 focus:outline-none focus:border-slate-300 font-medium select-none cursor-pointer rounded-none"
             >
-              <option value="auto-smart-routing">Auto (Smart Routing) (Recommended)</option>
-              <optgroup label="Flagship & Large Models">
-                <option value="llama-3.3-70b-versatile">Llama 3.3 70B Versatile (Best Quality)</option>
-                <option value="openai/gpt-oss-120b">GPT-OSS 120B (High Capacity)</option>
+              <option value="auto-smart-routing">Auto (Equal Load Balance across 5 Models) (Recommended)</option>
+              <optgroup label="Multimodal Vision Models (Diagrams & OCR)">
+                <option value="qwen/qwen3.6-27b-vision">👁️ Qwen 3.6 27B Vision (Diagrams, Visual Math & OCR)</option>
               </optgroup>
-              <optgroup label="Fast & High-Throughput Models">
-                <option value="llama-3.1-8b-instant">Llama 3.1 8B Instant (Ultra-Fast 30k TPM)</option>
-                <option value="openai/gpt-oss-20b">GPT-OSS 20B (Balanced)</option>
+              <optgroup label="Flagship & Large Models (Text)">
+                <option value="openai/gpt-oss-120b">GPT-OSS 120B (OpenAI Flagship)</option>
+                <option value="groq/compound">Groq Compound (Flagship Compound System)</option>
+                <option value="qwen/qwen3.6-27b">Qwen 3.6 27B (High Capacity Text)</option>
+              </optgroup>
+              <optgroup label="Fast & High-Throughput Models (Text)">
+                <option value="groq/compound-mini">Groq Compound Mini (Fast System)</option>
+                <option value="openai/gpt-oss-20b">GPT-OSS 20B (Ultra-Fast 30k TPM)</option>
               </optgroup>
             </select>
 
@@ -824,6 +832,32 @@ export default function App() {
             </button>
 
             <button
+              onClick={handleExpandAll}
+              disabled={!activeDoc}
+              className={`p-1.5 border text-xs transition-none rounded-none flex items-center gap-1.5 font-medium
+                ${!activeDoc 
+                  ? 'border-slate-100 text-slate-300 cursor-not-allowed' 
+                  : 'border-slate-200 text-slate-600 hover:bg-slate-50 cursor-pointer'}`}
+              title="Expand all nodes in the mindmap"
+            >
+              <UnfoldVertical className="w-3.5 h-3.5 stroke-[1.5]" />
+              <span>Expand All</span>
+            </button>
+
+            <button
+              onClick={handleCollapseAll}
+              disabled={!activeDoc}
+              className={`p-1.5 border text-xs transition-none rounded-none flex items-center gap-1.5 font-medium
+                ${!activeDoc 
+                  ? 'border-slate-100 text-slate-300 cursor-not-allowed' 
+                  : 'border-slate-200 text-slate-600 hover:bg-slate-50 cursor-pointer'}`}
+              title="Collapse all nodes to root"
+            >
+              <FoldVertical className="w-3.5 h-3.5 stroke-[1.5]" />
+              <span>Collapse All</span>
+            </button>
+
+            <button
               onClick={handleUndo}
               disabled={undoHistory.length === 0}
               className={`p-1.5 border text-xs transition-none rounded-none flex items-center gap-1.5 font-medium
@@ -902,7 +936,7 @@ export default function App() {
               <div className="flex-1 overflow-y-auto p-5 space-y-4">
                 <div>
                   <h3 className="text-base font-bold text-slate-800 leading-snug mb-1.5 font-sans">
-                    {selectedNode.label}
+                    <MathRenderer content={selectedNode.label} inline className="text-base font-bold text-slate-800" />
                   </h3>
                   <div className="h-[2px] bg-slate-100 w-10"></div>
                 </div>
