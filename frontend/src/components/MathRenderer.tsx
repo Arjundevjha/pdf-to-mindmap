@@ -148,7 +148,7 @@ export function renderKaTeXFormula(rawFormula: string, displayMode: boolean): st
     return katex.renderToString(formula, {
       displayMode,
       throwOnError: false,
-      output: 'htmlAndMathml',
+      output: 'html',
       strict: false,
       trust: true,
       errorColor: '#2563eb',
@@ -182,7 +182,7 @@ export const MathRenderer: React.FC<MathRendererProps> = React.memo(({ content, 
       <span className={`font-sans leading-normal ${className}`}>
         <ReactMarkdown
           remarkPlugins={[remarkMath, remarkGfm]}
-          rehypePlugins={[[rehypeKatex, { output: 'htmlAndMathml', throwOnError: false }]]}
+          rehypePlugins={[[rehypeKatex, { output: 'html', throwOnError: false }]]}
           components={{
             p: ({ children }) => <span className="inline select-text">{children}</span>,
             strong: ({ children }) => <strong className="font-semibold text-slate-900">{children}</strong>,
@@ -200,7 +200,7 @@ export const MathRenderer: React.FC<MathRendererProps> = React.memo(({ content, 
     <div className={`font-sans text-xs leading-relaxed ${className}`}>
       <ReactMarkdown
         remarkPlugins={[remarkMath, remarkGfm]}
-        rehypePlugins={[[rehypeKatex, { output: 'htmlAndMathml', throwOnError: false }]]}
+        rehypePlugins={[[rehypeKatex, { output: 'html', throwOnError: false }]]}
         components={{
           h1: ({ children }) => <h1 className="text-sm font-bold text-slate-900 tracking-tight mt-4 mb-2">{children}</h1>,
           h2: ({ children }) => <h2 className="text-xs font-bold text-slate-800 uppercase tracking-wider mt-3.5 mb-1.5">{children}</h2>,

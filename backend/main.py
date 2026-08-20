@@ -832,40 +832,64 @@ async def generate_mindmap_vision(
         raise HTTPException(status_code=400, detail="Only PDF files are supported for Vision processing.")
 
     try:
-        # Read file bytes and render pages to PNG base64 in memory
+        # Read file bytes and load PDF
         file_bytes = await file.read()
         doc = fitz.open(stream=file_bytes, filetype="pdf")
 
         if len(doc) == 0:
             raise HTTPException(status_code=400, detail="The uploaded PDF is empty.")
 
+        # Extract digital text as backup and for multi-page context
+        all_extracted_text = ""
+        for page in doc:
+            all_extracted_text += page.get_text() + "\n"
+
+        # Multi-Page Token Budget:
+        # Groq's qwen/qwen3.6-27b on-demand tier has an 8,000 TPM ceiling (~2400 tokens per image).
+        # We pass up to 2 high-clarity pages as images and append remaining page text.
         page_images_b64 = []
-        max_pages = min(len(doc), 5)
-        for i in range(max_pages):
+        max_visual_pages = min(len(doc), 2)
+        for i in range(max_visual_pages):
             page = doc[i]
-            # Render at 150 DPI for optimal clarity and reasonable payload size
-            pix = page.get_pixmap(dpi=150)
-            img_png = pix.tobytes("png")
-            page_images_b64.append(base64.b64encode(img_png).decode("utf-8"))
+            # Render at 96 DPI for crisp text with optimized token weight
+            pix = page.get_pixmap(dpi=96)
+            pil_img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+            
+            # Downsample if dimensions exceed 1024px
+            max_dim = max(pil_img.size)
+            if max_dim > 1024:
+                scale = 1024 / max_dim
+                new_size = (int(pil_img.size[0] * scale), int(pil_img.size[1] * scale))
+                pil_img = pil_img.resize(new_size, Image.Resampling.LANCZOS)
+                
+            buf = io.BytesIO()
+            pil_img.save(buf, format="JPEG", quality=80, optimize=True)
+            page_images_b64.append(base64.b64encode(buf.getvalue()).decode("utf-8"))
 
         system_prompt = get_system_prompt(subject)
         
+        prompt_text = (
+            "Analyze the visual diagrams, flowcharts, mathematical/physical formulas, graphs, tables, "
+            "and text on these document page(s). Synthesize BOTH the visual diagrams and text into an "
+            "exhaustive, highly structured hierarchical mindmap JSON matching the requested schema.\n"
+            "Ensure all formulas and equations are strictly formatted in standard LaTeX delimiters ($...$ for inline, $$...$$ for block)."
+        )
+        
+        # If document has additional pages beyond the visual images, append their text
+        if len(doc) > 2 and all_extracted_text.strip():
+            prompt_text += f"\n\nAdditional Document Context from Remaining Pages:\n{all_extracted_text[:4000]}"
+
         user_content_blocks = [
             {
                 "type": "text",
-                "text": (
-                    "Analyze the visual diagrams, flowcharts, mathematical/physical formulas, graphs, tables, "
-                    "and text on these document page(s). Synthesize BOTH the visual diagrams and text into an "
-                    "exhaustive, highly structured hierarchical mindmap JSON matching the requested schema. "
-                    "Ensure all formulas and equations are strictly formatted in standard LaTeX delimiters ($...$ for inline, $$...$$ for block)."
-                )
+                "text": prompt_text
             }
         ]
         for img_b64 in page_images_b64:
             user_content_blocks.append({
                 "type": "image_url",
                 "image_url": {
-                    "url": f"data:image/png;base64,{img_b64}"
+                    "url": f"data:image/jpeg;base64,{img_b64}"
                 }
             })
 
@@ -884,7 +908,7 @@ async def generate_mindmap_vision(
             "max_tokens": 1800
         }
 
-        logger.info(f"Sending Groq Vision request for {file.filename} ({len(page_images_b64)} pages) using model: 'qwen/qwen3.6-27b'")
+        logger.info(f"Sending Groq Vision request for {file.filename} ({len(page_images_b64)} visual pages) using model: 'qwen/qwen3.6-27b'")
         
         async with httpx.AsyncClient(timeout=90.0) as client:
             resp = await client.post(
@@ -893,6 +917,32 @@ async def generate_mindmap_vision(
                 json=data,
                 timeout=90.0
             )
+
+            # If Groq Vision hits a 413 (Payload/TPM Too Large) or 429 (Rate Limit), smoothly fallback to fast-text LPU model
+            if resp.status_code in [413, 429]:
+                logger.warning(f"Groq Vision returned status {resp.status_code}. Automatically falling back to text LPU model 'openai/gpt-oss-120b'.")
+                fallback_payload = {
+                    "model": "openai/gpt-oss-120b",
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Analyze the document text and generate the hierarchical mindmap JSON:\n\n{all_extracted_text[:12000]}"}
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": 4096
+                }
+                fallback_resp = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=headers,
+                    json=fallback_payload,
+                    timeout=90.0
+                )
+                if fallback_resp.status_code == 200:
+                    raw_fallback = fallback_resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+                    mindmap_data = repair_and_parse_json(raw_fallback)
+                    response.headers["X-Model-Used"] = "openai/gpt-oss-120b (Vision Text Fallback)"
+                    response.headers["X-Model-Routed"] = "true"
+                    response.headers["Access-Control-Expose-Headers"] = "X-Model-Used, X-Model-Routed"
+                    return mindmap_data
 
             if resp.status_code != 200:
                 logger.error(f"Groq Vision API error: {resp.status_code} - {resp.text[:200]}")

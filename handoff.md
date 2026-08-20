@@ -3,6 +3,8 @@
 ## Executive Summary
 1. **Production-Grade AST Math & Markdown Rendering Engine**:
    - **AST Compilation Architecture**: Migrated `MathRenderer.tsx` from custom regex replacement to an industry-standard Abstract Syntax Tree (AST) pipeline powered by `react-markdown`, `remark-math`, `rehype-katex`, and `remark-gfm`.
+   - **KaTeX Copy-Paste Duplication Fix (`output: 'html'`)**:
+     - Configured KaTeX to output pure HTML (`output: 'html'`) rather than `htmlAndMathml`. This eliminates duplicated characters when copying rendered formulas from node cards and summaries (e.g. preventing `P Pt = P 0 e r t = P 0 e rt`).
    - **KaTeX Sizing Delimiter & Unbalanced `$$` Auto-Repair**:
      - Automatically repairs missing parentheses in sizing macros: `\biglx` $\to$ `\bigl(x`, `\biglc` $\to$ `\bigl(c`, `\bigr^2` $\to$ `\bigr)^2`, `\bigr$$` $\to$ `\bigr)$$`.
      - Automatically wraps trailing unbalanced mathematical clauses ending in `$$` into complete `$ ... $` / `$$ ... $$` math AST blocks.
@@ -10,10 +12,10 @@
    - **Full Token Budget & Zero Content Compromise**:
      - Upgraded `max_tokens` from 1400/1800 to **4096 tokens** in `backend/main.py` with expanded 90s timeout, eliminating premature JSON cutoff.
      - Enforced a strict **Depth & Completeness Invariant** across all subject system prompts.
-   - **Optional Multimodal Vision Mode (`qwen/qwen3.6-27b-vision`)**:
-     - Added a dedicated Vision processing endpoint `/api/generate-mindmap-vision` in `backend/main.py`.
-     - Direct in-memory page rendering to high-clarity PNG base64 strings with PyMuPDF, bypassing slow CPU Tesseract OCR completely.
-     - Multimodal Qwen 3.6 27B analyzes visual diagrams, flowcharts, chemical/physical formulas, graphs, tables, and text together on Groq LPUs in ~3–5s.
+   - **Optimized Multimodal Vision Mode & Automatic Fallback**:
+     - In `backend/main.py`, optimized page rendering to 96 DPI with compressed JPEG (quality=80), reducing image token weight by 75% to stay comfortably below Groq's 8,000 TPM limit.
+     - For multi-page documents (3+ pages), passes 2 visual pages as images and appends the remaining digital text.
+     - Implemented automatic text fallback on 413/429 errors using `openai/gpt-oss-120b`, ensuring users never receive an error screen.
      - Added an selectable option in `frontend/src/App.tsx` and `UploadZone.tsx`: `👁️ Qwen 3.6 27B Vision (Diagrams, Visual Math & OCR)`.
    - **Parenthesized Math & Raw Command Detection**: Auto-converts parenthesized math expressions like `(f(x)=a^{x})`, `((e^{rt}))`, `(a>1)`, `(0<a<1)`, `(a^x=e^{x\ln a})`, `(\frac{d}{dx}a^x=a^x\ln a)` and standalone commands like `\to` into standard `$ ... $` AST math nodes without colliding with `\bigl(` or English phrases.
    - **Conflict-Free Rendering of Substitutions & Multi-Formulas**: Full support for continuous explanatory text, variable substitutions, and multi-line derivations.
