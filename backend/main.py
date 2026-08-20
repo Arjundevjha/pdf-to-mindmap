@@ -119,57 +119,30 @@ def make_ids_unique(node: dict, suffix: str) -> dict:
     return node
 
 def consolidate_summaries(sub_maps: list[dict]) -> str:
-    core_concepts = []
-    examples = []
-    
-    for i, sub_map in enumerate(sub_maps):
-        part_name = f"Part {i+1}"
-        summary_text = sub_map.get("summary", "")
-        
-        # Extract Core Concept section
-        concept_match = re.search(r"### Core Concept\s*\n(.*?)(?=\n###|$)", summary_text, re.DOTALL)
-        if concept_match:
-            concept_content = concept_match.group(1).strip()
-            # Clean up leading dashes or bullet points and format nicely
-            clean_lines = []
-            for line in concept_content.split('\n'):
-                line = line.strip()
-                if line.startswith('-'):
-                    line = line[1:].strip()
-                if line:
-                    clean_lines.append(line)
-            if clean_lines:
-                core_concepts.append(f"- **{part_name}**: {'; '.join(clean_lines)}")
-        
-        # Extract Examples section
-        examples_match = re.search(r"### Examples\s*\n(.*?)(?=\n###|$)", summary_text, re.DOTALL)
-        if examples_match:
-            examples_content = examples_match.group(1).strip()
-            clean_lines = []
-            for line in examples_content.split('\n'):
-                line = line.strip()
-                if line.startswith('-'):
-                    line = line[1:].strip()
-                if line:
-                    clean_lines.append(line)
-            if clean_lines:
-                examples.append(f"- **{part_name}**: {'; '.join(clean_lines)}")
-                
-    # If we couldn't parse anything, return a fallback
-    if not core_concepts:
-        return (
-            "### Core Concept\n- Consolidated study guide covering all parts of the document.\n\n"
-            "### Examples\n- Multi-part document processing.\n\n"
-            "### Connection\n- Master consolidated topic map."
-        )
-        
-    core_concept_str = "\n".join(core_concepts)
-    examples_str = "\n".join(examples) if examples else "- Key examples are detailed in the respective sub-sections."
-    
+    """
+    Synthesizes a clean executive overview from multiple sub-mindmap sections
+    without boilerplate placeholders.
+    """
+    key_points = []
+    for idx, sub_map in enumerate(sub_maps):
+        label = sub_map.get("label", f"Section {idx+1}")
+        summary = sub_map.get("summary", "")
+        # Extract main thesis or first paragraph
+        thesis_match = re.search(r"\*\*(?:Main Thesis|Mathematical Principle|Physical Principle|Historical Thesis|Geographical Thesis|Overview)\*\*:\s*(.*?)(?=\n-|\n###|$)", summary, re.DOTALL)
+        if thesis_match:
+            content = thesis_match.group(1).strip()
+            key_points.append(f"- **{label}**: {content}")
+        elif summary.strip():
+            first_line = summary.strip().split('\n')[0].replace('#', '').strip()
+            key_points.append(f"- **{label}**: {first_line}")
+
+    if not key_points:
+        return "### Core Concept\n- Comprehensive overview synthesizing all chapters and principles from the document."
+
+    points_str = "\n".join(key_points)
     return (
-        f"### Core Concept\n{core_concept_str}\n\n"
-        f"### Examples\n{examples_str}\n\n"
-        f"### Connection\n- Merges all sections into a comprehensive study overview."
+        f"### Core Concept\n{points_str}\n\n"
+        f"### Study Structure\n- Master curriculum integrating all document subtopics into individual child nodes below."
     )
 
 class MindmapGenerateRequest(BaseModel):
@@ -1169,23 +1142,33 @@ async def generate_mindmap_vision(
             return final_map
 
         # Multi-page document: consolidate under master root
-        first_label = page_submaps[0].get("label", "Document Overview")
+        # Multi-page document: promote children of each submap directly to master root
+        first_label = page_submaps[0].get("label", "Document Study Guide")
+        if first_label in ["Document Overview & Core Themes", "Document Overview", "Central Topic"]:
+            for sm in page_submaps:
+                cand_label = sm.get("label", "")
+                if cand_label and cand_label not in ["Document Overview & Core Themes", "Document Overview", "Central Topic"]:
+                    first_label = cand_label
+                    break
+
+        all_children = []
+        for i, sub_map in enumerate(page_submaps):
+            # If the submap has children, promote its children directly
+            if sub_map.get("children") and len(sub_map["children"]) > 0:
+                for c_idx, child in enumerate(sub_map["children"]):
+                    unique_child = make_ids_unique(child, f"p{i+1}_{c_idx+1}")
+                    all_children.append(unique_child)
+            else:
+                # If submap has no children, include the submap itself as a child node
+                unique_sub_map = make_ids_unique(sub_map, f"page_{i+1}")
+                all_children.append(unique_sub_map)
+
         consolidated_root = {
             "id": "root",
             "label": first_label,
             "summary": consolidate_summaries(page_submaps),
-            "children": []
+            "children": all_children
         }
-
-        for i, sub_map in enumerate(page_submaps):
-            unique_sub_map = make_ids_unique(sub_map, f"page_{i+1}")
-            part_label = unique_sub_map.get("label", f"Page {i+1}")
-            if part_label == f"root_page_{i+1}" or part_label == "Central Topic":
-                part_label = f"Page {i+1}"
-            else:
-                part_label = f"Page {i+1}: {part_label}"
-            unique_sub_map["label"] = part_label
-            consolidated_root["children"].append(unique_sub_map)
 
         final_map = sanitize_mindmap_math(consolidated_root)
         await enrich_mindmap_with_images(final_map, max_images=6)
@@ -1398,30 +1381,32 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
                 
             # Otherwise, consolidate multiple mindmaps under a parent root
             first_label = sub_maps[0].get("label", "Document Study Guide")
-            if first_label == "Central Topic":
-                first_label = "Document Study Guide"
-                
+            if first_label in ["Document Overview & Core Themes", "Document Overview", "Central Topic"]:
+                for sm in sub_maps:
+                    cand_label = sm.get("label", "")
+                    if cand_label and cand_label not in ["Document Overview & Core Themes", "Document Overview", "Central Topic"]:
+                        first_label = cand_label
+                        break
+
+            all_children = []
+            for i, sub_map in enumerate(sub_maps):
+                # If submap has children, promote its children directly
+                if sub_map.get("children") and len(sub_map["children"]) > 0:
+                    for c_idx, child in enumerate(sub_map["children"]):
+                        unique_child = make_ids_unique(child, f"part{i+1}_{c_idx+1}")
+                        all_children.append(unique_child)
+                else:
+                    # If submap has no children, include the submap itself as a child node
+                    unique_sub_map = make_ids_unique(sub_map, f"part_{i+1}")
+                    all_children.append(unique_sub_map)
+
             consolidated_root = {
                 "id": "root",
                 "label": first_label,
                 "summary": consolidate_summaries(sub_maps),
-                "children": []
+                "children": all_children
             }
-            
-            for i, sub_map in enumerate(sub_maps):
-                # Ensure all sub-map nodes have unique IDs to prevent React Flow crashes
-                unique_sub_map = make_ids_unique(sub_map, f"part_{i+1}")
-                
-                # Make the root node of this chunk a child of the master root
-                part_label = unique_sub_map.get("label", f"Part {i+1}")
-                if part_label == f"root_part_{i+1}" or part_label == "Central Topic":
-                    part_label = f"Part {i+1}"
-                else:
-                    part_label = f"Part {i+1}: {part_label}"
-                unique_sub_map["label"] = part_label
-                
-                consolidated_root["children"].append(unique_sub_map)
-                
+
             final_consolidated = sanitize_mindmap_math(consolidated_root)
             await enrich_mindmap_with_images(final_consolidated, max_images=6)
             return final_consolidated
