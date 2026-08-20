@@ -576,32 +576,37 @@ Output ONLY a single valid JSON object strictly matching this schema:
 }"""
 
     else:
-        return """You are an expert educational curriculum architect.
-Your objective is to analyze the document and construct a hierarchical, ADHD-friendly, scannable mindmap.
+        return """You are an elite educational mindmap and curriculum designer.
+Your objective is to analyze the document and construct an in-depth, rigorous, highly comprehensive hierarchical mindmap.
 
-RULES:
-1. Node Labels: 3-5 word concise summaries. If mentioning a formula, variable, or rule, wrap in LaTeX dollar delimiters (e.g. '$f(x) = a^x$', '$\\log_a(x/y) = \\log_a x - \\log_a y$').
-2. Scannable Bullet Format:
+CRITICAL DEPTH & FORMATTING RULES:
+1. STRICT DEPTH & COMPLETENESS INVARIANT (NEVER COMPROMISE ON CONTENT):
+   - Every node MUST be exhaustive, rigorous, and fully detailed. Do NOT output shallow, abbreviated, or single-sentence summaries.
+   - NEVER cut short, compress, or omit intermediate steps, algebraic mechanisms, empirical data, or worked explanations from the text.
+   - Thoroughly explain underlying mechanisms, causality, structural workflows, formulas, and real-world applications.
+2. Math & Formula Delimiters:
+   - Every formula, equation, variable, chemical reaction, and math symbol MUST be wrapped in standard LaTeX ($inline$ or $$block$$).
+   - NEVER use plain parentheses '(f(x)=a^x)' or raw arrows '→' without LaTeX delimiters (use '$\\to$').
+   - NEVER leave raw backslashed commands outside of '$' delimiters.
+3. MANDATORY HIERARCHY: Break down the document into 3 to 6 distinct child nodes representing core subtopics, laws, and components.
+4. Scannable Summary Structure (Use rich multi-bullet markdown format):
    ### Core Concept
-   - **Main Thesis**: [1-2 sentence core intuition]
-   - **Key Mechanism**: [Step-by-step breakdown with LaTeX math notation in $...$ where applicable]
+   - **Main Thesis**: [Comprehensive 2-3 sentence intuition of the concept or topic]
+   - **Key Mechanism**: [Step-by-step breakdown of how the process/system/formula functions with LaTeX $...$ notation]
 
-   ### Key Details
-   - **Key Term / Data**: [Definitions, facts, figures, formulas in $...$ from text]
+   ### Key Details & Evidence
+   - **Key Principles & Data**: [Definitions, facts, equations, empirical evidence from text]
+   - **Variables & Structure**: [Detailed symbol definitions and structural components]
 
-   ### Physical Meaning & Application
-   - **Significance & Application**: [Practical takeaway and broader context]
-
-CRITICAL FORMATTING:
-- ALWAYS enclose every formula, equation, variable, and math operator in '$...$' (e.g. '$a > 1$', '$a^x = e^{x\\ln a}$', '$\\to$').
-- NEVER use plain parentheses '(f(x)=a^x)' or un-delimited backslashes '\\to' for math notation.
+   ### Practical Meaning & Application
+   - **Significance & Application**: [Practical engineering, scientific, economic, or societal relevance]
 
 JSON OUTPUT SCHEMA:
 Output ONLY a single valid JSON object strictly matching this schema:
 {
   "id": "root",
   "label": "Document Overview & Core Themes",
-  "summary": "### Core Concept\\n- **Main Thesis**: Primary conceptual takeaway from document.\\n- **Key Mechanism**: Step-by-step structural logic.\\n\\n### Key Details\\n- **Key Term / Data**: Core terminology and empirical evidence.\\n\\n### Physical Meaning & Application\\n- **Significance & Application**: Practical implications and broader context.",
+  "summary": "### Core Concept\\n- **Main Thesis**: Primary conceptual takeaway from document.\\n- **Key Mechanism**: Step-by-step structural logic.\\n\\n### Key Details & Evidence\\n- **Key Principles & Data**: Core terminology and empirical evidence.\\n- **Variables & Structure**: Component definitions and interactions.\\n\\n### Practical Meaning & Application\\n- **Significance & Application**: Practical implications and broader context.",
   "children": []
 }"""
 
@@ -846,9 +851,9 @@ async def generate_mindmap_vision(
 
         # Multi-Page Token Budget:
         # Groq's qwen/qwen3.6-27b on-demand tier has an 8,000 TPM ceiling (~2400 tokens per image).
-        # We pass up to 2 high-clarity pages as images and append remaining page text.
+        # We pass the primary high-clarity page as an image and append remaining page text, allowing full 4096 max_tokens completion space.
         page_images_b64 = []
-        max_visual_pages = min(len(doc), 2)
+        max_visual_pages = min(len(doc), 1)
         for i in range(max_visual_pages):
             page = doc[i]
             # Render at 96 DPI for crisp text with optimized token weight
@@ -871,13 +876,14 @@ async def generate_mindmap_vision(
         prompt_text = (
             "Analyze the visual diagrams, flowcharts, mathematical/physical formulas, graphs, tables, "
             "and text on these document page(s). Synthesize BOTH the visual diagrams and text into an "
-            "exhaustive, highly structured hierarchical mindmap JSON matching the requested schema.\n"
+            "exhaustive, highly structured hierarchical mindmap JSON matching the requested schema with 3 to 6 detailed child nodes.\n"
+            "CRITICAL: Do NOT compress, abbreviate, or omit intermediate algebra, mechanisms, formulas, or worked explanations.\n"
             "Ensure all formulas and equations are strictly formatted in standard LaTeX delimiters ($...$ for inline, $$...$$ for block)."
         )
         
-        # If document has additional pages beyond the visual images, append their text
-        if len(doc) > 2 and all_extracted_text.strip():
-            prompt_text += f"\n\nAdditional Document Context from Remaining Pages:\n{all_extracted_text[:4000]}"
+        # If document has additional pages beyond the visual image, append their text
+        if len(doc) > 1 and all_extracted_text.strip():
+            prompt_text += f"\n\nAdditional Document Context from Remaining Pages:\n{all_extracted_text[:6000]}"
 
         user_content_blocks = [
             {
@@ -905,7 +911,7 @@ async def generate_mindmap_vision(
                 {"role": "user", "content": user_content_blocks}
             ],
             "temperature": 0.2,
-            "max_tokens": 1800
+            "max_tokens": 4096
         }
 
         logger.info(f"Sending Groq Vision request for {file.filename} ({len(page_images_b64)} visual pages) using model: 'qwen/qwen3.6-27b'")
