@@ -269,19 +269,19 @@ def repair_and_parse_json(response_text: str) -> dict:
         data = json.loads(repaired, strict=False)
         if isinstance(data, dict):
             if "id" not in data: data["id"] = "root"
-            if "label" not in data: data["label"] = "Document Overview"
-            if "summary" not in data: data["summary"] = "### Core Concept\n- **Overview**: Comprehensive concept breakdown."
-            if "children" in data and isinstance(data["children"], list) and len(data["children"]) > 0:
+            if "label" not in data or not data["label"]: data["label"] = "Core Study Topic"
+            if "summary" not in data or not data["summary"]: data["summary"] = "### Core Concept & Exam Rule\n- **Key Principle**: Comprehensive syllabus revision guide covering all core methods."
+            if "children" not in data: data["children"] = []
+            if isinstance(data["children"], list) and len(data["children"]) > 0:
+                return data
+            elif isinstance(data, dict) and data.get("label") and data.get("label") != "Core Study Topic":
                 return data
     except Exception as e:
         logger.warning(f"JSON auto-repair parsing warning: {str(e)}")
 
     # 3. Robust Regex Block Extractor (Extracts root node AND all child objects so children are never lost)
     root_label_match = re.search(r'"label"\s*:\s*"([^"]+)"', cleaned)
-    root_label = root_label_match.group(1) if root_label_match else "Document Overview & Core Themes"
-
     root_summary_match = re.search(r'"summary"\s*:\s*"((?:[^"\\]|\\.)*)"', cleaned)
-    root_summary = root_summary_match.group(1).replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\') if root_summary_match else "Overview of core concepts and mechanisms."
 
     # Extract all child nodes by scanning for node objects
     extracted_children = []
@@ -293,7 +293,7 @@ def repair_and_parse_json(response_text: str) -> dict:
     seen_ids = set()
     for match in child_pattern.finditer(cleaned):
         cid, clabel, csummary = match.groups()
-        if cid == "root" or cid in seen_ids or clabel == root_label:
+        if cid == "root" or cid in seen_ids:
             continue
         seen_ids.add(cid)
         clean_sum = csummary.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
@@ -303,6 +303,20 @@ def repair_and_parse_json(response_text: str) -> dict:
             "summary": clean_sum,
             "children": []
         })
+
+    if root_label_match:
+        root_label = root_label_match.group(1)
+    elif extracted_children:
+        root_label = extracted_children[0]["label"]
+    else:
+        root_label = "Core Syllabus Guide"
+
+    if root_summary_match:
+        root_summary = root_summary_match.group(1).replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
+    elif extracted_children:
+        root_summary = f"### Core Concept & Exam Rule\n- **Key Principle**: Comprehensive study guide synthesizing {len(extracted_children)} major topics."
+    else:
+        root_summary = "### Core Concept & Exam Rule\n- **Key Principle**: Study overview covering core principles and problem-solving techniques."
 
     return {
         "id": "root",
@@ -510,24 +524,27 @@ async def enrich_mindmap_with_images(node: dict, max_images: int = 8, count: int
 # Subject-specific system prompts tailored for Secondary / O-Level Revision Notes
 def get_system_prompt(subject: str) -> str:
     if subject == "math":
-        return """You are a master Secondary & O-Level Mathematics tutor and curriculum specialist.
+        return """You are a master Mathematics tutor and curriculum specialist.
 Your objective is to analyze the student revision notes and transform them into an exhaustive, exam-focused, highly structured hierarchical mindmap.
 
-CRITICAL MATHEMATICAL & TOPOLOGY RULES:
-1. MANDATORY MULTI-NODE HIERARCHY (NEVER COLLAPSE INTO A SINGLE NODE):
+CRITICAL TOPOLOGY & LABEL RULES:
+1. SPECIFIC ROOT TOPIC NAME (NEVER USE GENERIC LABELS):
+   - The root node "label" MUST BE the exact mathematical subject/topic extracted from the text (e.g. "Quadratic Functions & Equations", "Exponential & Logarithmic Functions", "Trigonometry & Circular Measure", "Integration & Differentiation").
+   - NEVER write "O-Level", "Document Overview", "Study Guide", or generic headings in the root label.
+2. MANDATORY MULTI-NODE HIERARCHY (NEVER COLLAPSE INTO A SINGLE NODE):
    - The root node MUST ONLY contain the topic title and a concise 2-sentence syllabus overview.
    - The root node MUST HAVE 4 to 8 distinct child nodes in its "children" array, one for EACH topic/chapter (e.g. Quadratic Functions, The Discriminant, Surds & Conjugates, Polynomial Division, Partial Fractions, Binomial Theorem).
    - Each major child node in turn SHOULD contain 2 to 4 sub-child nodes in its own "children" array for specific formulas, proofs, or worked techniques.
    - STRICTLY FORBIDDEN: Cramming multiple topics into the root summary or outputting an empty "children": [] array.
-2. STRICT DEPTH & COMPLETENESS INVARIANT (NEVER COMPROMISE ON CONTENT):
+3. STRICT DEPTH & COMPLETENESS INVARIANT:
    - Every node MUST be exhaustive, rigorous, and fully detailed. Do NOT output shallow or single-sentence summaries.
    - Include complete intermediate algebraic steps, substitutions, and sign rules from the notes.
    - Thoroughly explain conditions (e.g. discriminant $\\Delta = b^2 - 4ac$, domain restrictions, conjugate multiplication rules).
-3. LaTeX Formula Standard (MANDATORY DELIMITERS & PURITY):
+4. LaTeX Formula Standard (MANDATORY DELIMITERS & PURITY):
    - Every formula, equation, rule, function, variable, and operator MUST be wrapped in standard dollar-sign LaTeX delimiters ($...$ inline, $$...$$ block display).
    - STRICT DELIMITER PURITY: NEVER put English text inside '$$ ... $$' or '$ ... $'. Mathematical blocks must ONLY contain pure LaTeX syntax.
    - STRICT FORBIDDEN: Never write raw parentheses '(f(x)=a^x)' or raw commands '\\to' without '$' delimiters.
-4. Summary Structure (Use rich multi-bullet markdown format for EVERY node):
+5. Summary Structure (Use rich multi-bullet markdown format for EVERY node):
    ### Core Concept & Exam Rule
    - **Key Principle**: [Clear intuition of the rule or formula for exams]
    - **Step-by-Step Method**: [Step-by-step algebraic technique with LaTeX $...$ notation]
@@ -544,7 +561,7 @@ JSON OUTPUT SCHEMA:
 Output ONLY a single valid JSON object strictly matching this multi-level hierarchy:
 {
   "id": "root",
-  "label": "O-Level Algebra & Advanced Techniques",
+  "label": "Algebraic Foundations & Quadratic Functions",
   "summary": "### Core Concept & Exam Rule\\n- **Key Principle**: Comprehensive syllabus overview covering quadratic equations, surds, polynomials, partial fractions, and binomial expansions.\\n- **Step-by-Step Method**: Master canonical transformations from standard forms to algebraic solutions.",
   "children": [
     {
@@ -588,15 +605,18 @@ Output ONLY a single valid JSON object strictly matching this multi-level hierar
 }"""
 
     elif subject == "physics":
-        return """You are a master Secondary & O-Level Physics tutor and exam specialist.
+        return """You are a master Physics tutor and exam specialist.
 Your objective is to analyze student physics notes and transform them into an exhaustive, exam-focused hierarchical mindmap.
 
-CRITICAL PHYSICS & TOPOLOGY RULES:
-1. MANDATORY MULTI-NODE HIERARCHY:
+CRITICAL TOPOLOGY & LABEL RULES:
+1. SPECIFIC ROOT TOPIC NAME:
+   - The root node "label" MUST BE the specific physics topic (e.g. "Kinematics & Dynamics", "Thermal Physics & Heat Transfer", "Current Electricity & DC Circuits").
+   - NEVER write "O-Level", "Document Overview", or generic headings in the root label.
+2. MANDATORY MULTI-NODE HIERARCHY:
    - The root node MUST contain 4 to 8 distinct child nodes in its "children" array, one for EACH topic, law, or mechanism.
    - NEVER collapse multiple topics into a single root node.
-2. LaTeX Equations with SI Units: Every physical law and formula MUST use standard LaTeX ($...$ inline and $$...$$ block) with SI units ($m/s^2$, $N$, $J$, $W$, $V$, $\\Omega$).
-3. Summary Structure:
+3. LaTeX Equations with SI Units: Every physical law and formula MUST use standard LaTeX ($...$ inline and $$...$$ block) with SI units ($m/s^2$, $N$, $J$, $W$, $V$, $\\Omega$).
+4. Summary Structure:
    ### Core Concept & Physical Law
    - **Key Definition**: [Concise, exam-accurate definition of the law or concept]
    - **Physical Mechanism**: [Force interactions, energy transfers, or field properties]
@@ -613,7 +633,7 @@ JSON OUTPUT SCHEMA:
 Output ONLY a single valid JSON object strictly matching this multi-level hierarchy:
 {
   "id": "root",
-  "label": "O-Level Physics & Mechanics Revision",
+  "label": "Kinematics & Newtonian Mechanics",
   "summary": "### Core Concept & Physical Law\\n- **Key Definition**: Comprehensive revision guide for kinematics, dynamics, energy, and work.\\n- **Physical Mechanism**: Gravitational and contact force interactions governing motion.",
   "children": [
     {
@@ -632,13 +652,14 @@ Output ONLY a single valid JSON object strictly matching this multi-level hierar
 }"""
 
     elif subject == "history":
-        return """You are a master Secondary & O-Level History tutor.
+        return """You are a master History tutor.
 Your objective is to analyze historical revision notes and map out causal chronologies, key turning points, and exam takeaways.
 
-CRITICAL TOPOLOGY & HIERARCHY RULES:
-1. MANDATORY MULTI-NODE HIERARCHY:
+CRITICAL TOPOLOGY & LABEL RULES:
+1. SPECIFIC ROOT TOPIC NAME: The root node "label" MUST BE the specific historical event or era (e.g. "Causes of World War I", "The Rise of Authoritarian Regimes", "The Cold War in Europe"). NEVER write "O-Level" or generic placeholders.
+2. MANDATORY MULTI-NODE HIERARCHY:
    - Root node MUST contain 4 to 8 distinct child nodes in its "children" array, one for EACH event, treaty, policy, or era.
-2. Summary Structure:
+3. Summary Structure:
    ### Core Historical Event & Context
    - **Key Event / Overview**: [Concise exam-focused summary of what occurred]
    - **Causal Factor**: [Root causes and triggers]
@@ -654,7 +675,7 @@ JSON OUTPUT SCHEMA:
 Output ONLY a single valid JSON object strictly matching this schema:
 {
   "id": "root",
-  "label": "O-Level History Revision Guide",
+  "label": "Causes of World War I & The Alliance System",
   "summary": "### Core Historical Event & Context\\n- **Key Event / Overview**: Comprehensive syllabus revision guide covering core historical developments and causal timelines.",
   "children": [
     {
@@ -667,13 +688,14 @@ Output ONLY a single valid JSON object strictly matching this schema:
 }"""
 
     elif subject == "geography":
-        return """You are a master Secondary & O-Level Geography tutor.
+        return """You are a master Geography tutor.
 Your objective is to analyze geographical revision notes and map out physical processes, landforms, and case studies.
 
-CRITICAL TOPOLOGY & HIERARCHY RULES:
-1. MANDATORY MULTI-NODE HIERARCHY:
+CRITICAL TOPOLOGY & LABEL RULES:
+1. SPECIFIC ROOT TOPIC NAME: The root node "label" MUST BE the specific geographical system (e.g. "Plate Tectonics & Seismic Hazards", "Weather & Climate Systems", "River & Coastal Geomorphology"). NEVER write "O-Level" or generic placeholders.
+2. MANDATORY MULTI-NODE HIERARCHY:
    - Root node MUST contain 4 to 8 distinct child nodes in its "children" array, one for EACH physical process, zone, or landform.
-2. Summary Structure:
+3. Summary Structure:
    ### Core Geographical Process
    - **Process Definition**: [Exam-accurate definition of the physical or human process]
    - **Key Mechanism**: [Step-by-step physical breakdown]
@@ -689,7 +711,7 @@ JSON OUTPUT SCHEMA:
 Output ONLY a single valid JSON object strictly matching this schema:
 {
   "id": "root",
-  "label": "O-Level Geography Revision Guide",
+  "label": "Plate Tectonics & Seismic Landforms",
   "summary": "### Core Geographical Process\\n- **Process Definition**: Comprehensive syllabus revision guide covering physical geography systems and spatial dynamics.",
   "children": [
     {
@@ -702,20 +724,23 @@ Output ONLY a single valid JSON object strictly matching this schema:
 }"""
 
     else:
-        return """You are a master Secondary & O-Level Study Guide and Curriculum Specialist.
+        return """You are a master Study Guide and Curriculum Specialist.
 Your objective is to analyze student study notes and construct an exhaustive, exam-focused hierarchical mindmap.
 
-CRITICAL TOPOLOGY & FORMATTING RULES:
-1. MANDATORY MULTI-NODE HIERARCHY (NEVER COLLAPSE INTO A SINGLE NODE):
+CRITICAL TOPOLOGY & LABEL RULES:
+1. SPECIFIC ROOT TOPIC NAME:
+   - The root node "label" MUST BE the exact subject topic extracted from the text (e.g. "Organic Chemistry & Functional Groups", "Cell Biology & Genetics", "Microeconomics & Market Structures").
+   - NEVER write "O-Level", "Document Overview", "Study Guide", or generic headings in the root label.
+2. MANDATORY MULTI-NODE HIERARCHY (NEVER COLLAPSE INTO A SINGLE NODE):
    - The root node MUST ONLY contain the topic title and a high-level syllabus summary.
    - The root node MUST HAVE 4 to 8 distinct child nodes in its "children" array, one for EACH core subtopic or chapter.
    - Each major child node SHOULD have 2 to 4 sub-child nodes in its own "children" array.
    - STRICTLY FORBIDDEN: Cramming multiple concepts into the root summary or outputting an empty "children": [] array.
-2. STRICT DEPTH & COMPLETENESS INVARIANT:
+3. STRICT DEPTH & COMPLETENESS INVARIANT:
    - Every node MUST be exhaustive, clear, and complete for exam revision.
-3. Math & Formula Delimiters:
+4. Math & Formula Delimiters:
    - Every formula, equation, variable, chemical reaction, and math symbol MUST be wrapped in standard LaTeX ($inline$ or $$block$$).
-4. Summary Structure (Use rich multi-bullet markdown format for EVERY node):
+5. Summary Structure (Use rich multi-bullet markdown format for EVERY node):
    ### Core Concept & Exam Rule
    - **Key Principle**: [Clear, direct explanation of the concept for exam revision]
    - **Step-by-Step Method**: [Step-by-step procedure, mechanism, or proof with LaTeX $...$]
@@ -731,25 +756,25 @@ JSON OUTPUT SCHEMA:
 Output ONLY a single valid JSON object strictly matching this schema:
 {
   "id": "root",
-  "label": "O-Level Study Revision Guide",
+  "label": "Organic Chemistry & Functional Groups",
   "summary": "### Core Concept & Exam Rule\\n- **Key Principle**: Comprehensive syllabus revision overview covering all core chapters and techniques.\\n- **Step-by-Step Method**: Systematic breakdown of methods and problem-solving strategies.",
   "children": [
     {
       "id": "node-1",
-      "label": "First Core Topic / Chapter",
-      "summary": "### Core Concept & Exam Rule\\n- **Key Principle**: Comprehensive explanation of the first major syllabus section.\\n- **Step-by-Step Method**: Step-by-step problem-solving technique.\\n\\n### Key Details & Rules\\n- **Essential Formulas & Definitions**: Fundamental identities in $...$.\\n- **Exam Pitfalls & Tips**: Common exam traps to avoid.\\n\\n### Practical Application\\n- **Worked Example / Application**: Practical exam walkthrough.",
+      "label": "Alkanes & Combustion Reactions",
+      "summary": "### Core Concept & Exam Rule\\n- **Key Principle**: Saturated hydrocarbons with single covalent bonds undergoing complete combustion.\\n- **Step-by-Step Method**: Balancing stoichiometric combustion equations.\\n\\n### Key Details & Rules\\n- **Essential Formulas & Definitions**: General formula $\\\\text{C}_n\\\\text{H}_{2n+2}$.\\n- **Exam Pitfalls & Tips**: Incomplete combustion produces toxic carbon monoxide $\\\\text{CO}$.\\n\\n### Practical Application\\n- **Worked Example / Application**: Fractional distillation of crude oil.",
       "children": []
     },
     {
       "id": "node-2",
-      "label": "Second Core Topic / Chapter",
-      "summary": "### Core Concept & Exam Rule\\n- **Key Principle**: Detailed explanation of the second major concept.\\n- **Step-by-Step Method**: Procedures and identities.",
+      "label": "Alkenes & Addition Reactions",
+      "summary": "### Core Concept & Exam Rule\\n- **Key Principle**: Unsaturated hydrocarbons containing carbon-carbon double bonds $\\\\text{C}=\\\\text{C}$.\\n- **Step-by-Step Method**: Electrophilic addition of aqueous bromine (decolorization from brown to colorless).",
       "children": []
     },
     {
       "id": "node-3",
-      "label": "Third Core Topic / Chapter",
-      "summary": "### Core Concept & Exam Rule\\n- **Key Principle**: In-depth analysis of the third key theme.",
+      "label": "Alcohols & Carboxylic Acids",
+      "summary": "### Core Concept & Exam Rule\\n- **Key Principle**: Functional group transformations via oxidation and esterification.",
       "children": []
     }
   ]
