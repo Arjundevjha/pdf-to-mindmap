@@ -6,10 +6,10 @@ import type { MindmapNode } from './MindmapCanvas';
 const getSingleModelFriendlyName = (id: string) => {
   if (id.includes('vision')) return 'Qwen 3.6 Vision (Multimodal)';
   if (id.includes('gpt-oss-120b')) return 'GPT-OSS 120B';
-  if (id.includes('compound-mini')) return 'Compound Mini';
-  if (id.includes('compound')) return 'Groq Compound';
   if (id.includes('gpt-oss-20b')) return 'GPT-OSS 20B';
   if (id.includes('qwen3.6-27b') || id.includes('qwen')) return 'Qwen 3.6 27B';
+  if (id.includes('compound-mini')) return 'GPT-OSS 20B (Compound Mini Alias)';
+  if (id.includes('compound')) return 'GPT-OSS 120B (Compound Alias)';
   if (id.includes('llama-3.3-70b') || id.includes('llama3-70b')) return 'GPT-OSS 120B (Routed)';
   if (id.includes('llama-3.1-8b') || id.includes('llama3-8b')) return 'GPT-OSS 20B (Routed)';
   return id;

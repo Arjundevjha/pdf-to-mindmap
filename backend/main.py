@@ -1174,12 +1174,10 @@ async def generate_mindmap_vision(
         logger.error(f"Unexpected error in Vision processing: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to process document with Vision: {str(e)}")
 
-# Equal Load Balancer: 5 active alternative models on Groq
+# Equal Load Balancer: Active alternative models on Groq
 ALL_ALTERNATIVE_MODELS = [
     "openai/gpt-oss-120b",
-    "groq/compound",
     "qwen/qwen3.6-27b",
-    "groq/compound-mini",
     "openai/gpt-oss-20b",
 ]
 
@@ -1204,6 +1202,10 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
     
     # Map deprecated or legacy model strings to active, supported Groq Cloud models
     MODEL_ALIASES = {
+        "groq/compound": "openai/gpt-oss-120b",
+        "compound": "openai/gpt-oss-120b",
+        "groq/compound-mini": "openai/gpt-oss-20b",
+        "compound-mini": "openai/gpt-oss-20b",
         "llama-3.3-70b-versatile": "openai/gpt-oss-120b",
         "llama-3.1-8b-instant": "openai/gpt-oss-20b",
         "llama3-70b-8192": "openai/gpt-oss-120b",
@@ -1211,15 +1213,15 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
         "llama-3.2-11b-vision-preview": "openai/gpt-oss-20b",
         "deepseek-r1-distill-llama-70b": "openai/gpt-oss-120b",
         "meta-llama/llama-4-scout-17b-16e-instruct": "openai/gpt-oss-120b",
-        "mixtral-8x7b-32768": "groq/compound",
-        "gemma2-9b-it": "groq/compound-mini",
+        "mixtral-8x7b-32768": "openai/gpt-oss-120b",
+        "gemma2-9b-it": "openai/gpt-oss-20b",
         "qwen/qwen3-32b": "qwen/qwen3.6-27b",
     }
     selected_model = MODEL_ALIASES.get(raw_model, raw_model)
     word_count = len(payload.text.split())
     
-    # Adjust chunk size so completions and compound models stay safely within free-tier token limits
-    if selected_model in ["openai/gpt-oss-20b", "groq/compound", "groq/compound-mini", "auto-smart-routing", "auto-load-balanced"] or len(payload.text) > 20000:
+    # Adjust chunk size so completions stay safely within free-tier token limits
+    if selected_model in ["openai/gpt-oss-20b", "auto-smart-routing", "auto-load-balanced"] or len(payload.text) > 20000:
         chunk_size = 5000
     else:
         chunk_size = 10000
@@ -1238,7 +1240,7 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
     primary_model = selected_model
     is_routed = False
     
-    # Distribute load equally across all 5 alternative models in round-robin fashion
+    # Distribute load equally across all active alternative models in round-robin fashion
     if selected_model in ["auto-smart-routing", "auto-load-balanced", "equal-load-distribution"]:
         is_routed = True
         global _load_balance_counter
@@ -1266,7 +1268,7 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
     async def process_chunk(client: httpx.AsyncClient, chunk_text: str, index: int) -> dict:
         initial_model = chunk_models[index]
         # Prioritize high-capacity models (gpt-oss-120b: 30k TPM) for reliable completion
-        high_capacity_first = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b", "groq/compound", "groq/compound-mini"]
+        high_capacity_first = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"]
         candidate_models = [initial_model] + [m for m in high_capacity_first if m != initial_model]
 
         user_prompt = f"Here is the text extracted from Part {index+1} of the document to turn into a mindmap:\n\n{chunk_text}"
@@ -1285,7 +1287,7 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
 
             for attempt in range(2):
                 try:
-                    # Calibrate token budget per model so TPM limits (8,000 TPM on Qwen/Compound) are never exceeded
+                    # Calibrate token budget per model so TPM limits (8,000 TPM on Qwen / 30,000 on GPT-OSS) are never exceeded
                     if "120b" in current_model or "20b" in current_model:
                         max_tokens = 2500
                     else:

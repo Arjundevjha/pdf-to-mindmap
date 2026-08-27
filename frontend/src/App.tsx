@@ -134,9 +134,7 @@ export default function App() {
     const validModels = [
       'auto-smart-routing',
       'openai/gpt-oss-120b',
-      'groq/compound',
       'qwen/qwen3.6-27b',
-      'groq/compound-mini',
       'openai/gpt-oss-20b'
     ];
     return (saved && validModels.includes(saved)) ? saved : 'auto-smart-routing';
@@ -727,17 +725,15 @@ export default function App() {
               onChange={(e) => setSelectedModel(e.target.value)}
               className="w-full text-xs bg-slate-50 border border-slate-200 text-slate-700 px-2.5 py-1.5 focus:outline-none focus:border-slate-300 font-medium select-none cursor-pointer rounded-none"
             >
-              <option value="auto-smart-routing">Auto (Equal Load Balance across 5 Models) (Recommended)</option>
+              <option value="auto-smart-routing">Auto (Load Balanced across Active Models) (Recommended)</option>
               <optgroup label="Multimodal Vision Models (Diagrams & OCR)">
                 <option value="qwen/qwen3.6-27b-vision">👁️ Qwen 3.6 27B Vision (Diagrams, Visual Math & OCR)</option>
               </optgroup>
               <optgroup label="Flagship & Large Models (Text)">
                 <option value="openai/gpt-oss-120b">GPT-OSS 120B (OpenAI Flagship)</option>
-                <option value="groq/compound">Groq Compound (Flagship Compound System)</option>
                 <option value="qwen/qwen3.6-27b">Qwen 3.6 27B (High Capacity Text)</option>
               </optgroup>
               <optgroup label="Fast & High-Throughput Models (Text)">
-                <option value="groq/compound-mini">Groq Compound Mini (Fast System)</option>
                 <option value="openai/gpt-oss-20b">GPT-OSS 20B (Ultra-Fast 30k TPM)</option>
               </optgroup>
             </select>

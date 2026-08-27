@@ -32,12 +32,26 @@
    - Camera zoom and viewport remain stable on expansion/collapse.
    - Topbar includes "Expand All" and "Collapse All" quick-action controls.
 
+5. **Groq Model Migration & Decommissioning of Groq Compound**:
+   - **Decommissioned Models**: `groq/compound` and `groq/compound-mini` have been retired and removed from active model options.
+   - **Active Production Model Suite**:
+     - Flagship & High-Capacity: `openai/gpt-oss-120b` (30,000 TPM limit) and `qwen/qwen3.6-27b`.
+     - Fast & High-Throughput: `openai/gpt-oss-20b` (30,000 TPM limit).
+     - Multimodal Vision: `qwen/qwen3.6-27b` (Vision Mode).
+   - **Backward-Compatible Alias Resolution**: Added automatic backend mapping in `MODEL_ALIASES` so any incoming or stored requests for `groq/compound`, `compound`, `groq/compound-mini`, `compound-mini`, `mixtral-8x7b-32768`, or `gemma2-9b-it` automatically route to `openai/gpt-oss-120b` or `openai/gpt-oss-20b`.
+   - **Frontend UI & Load Balancer Updates**:
+     - Updated dropdown selector in [`frontend/src/App.tsx`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/frontend/src/App.tsx) to list only active models.
+     - Updated friendly model label mapping in [`frontend/src/components/UploadZone.tsx`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/frontend/src/components/UploadZone.tsx).
+     - Synchronized documentation in [`ARCHITECTURE.md`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/ARCHITECTURE.md).
+
 ## Active State of Codebase Files
 - [`frontend/src/components/MathRenderer.tsx`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/frontend/src/components/MathRenderer.tsx): Upgraded KaTeX & Markdown AST renderer with delimiter auto-healing, sentence extraction, and inline card mode.
 - [`frontend/src/components/MindmapCanvas.tsx`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/frontend/src/components/MindmapCanvas.tsx): Node cards render titles via `MathRenderer`; interactive expansion controls.
-- [`frontend/src/App.tsx`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/frontend/src/App.tsx): Document handling, topbar controls, and vision model selection.
-- [`backend/main.py`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/backend/main.py): Backend LaTeX validation, syllabus prompts, 1-page visual chunking, rate-limit spacing, and child node promotion.
+- [`frontend/src/App.tsx`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/frontend/src/App.tsx): Document handling, topbar controls, active model selector (GPT-OSS 120B / Qwen 3.6 27B / GPT-OSS 20B).
+- [`frontend/src/components/UploadZone.tsx`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/frontend/src/components/UploadZone.tsx): Upload drag-and-drop zone and model badge display formatting.
+- [`backend/main.py`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/backend/main.py): Backend LaTeX validation, syllabus prompts, active load-balanced model pool (`openai/gpt-oss-120b`, `qwen/qwen3.6-27b`, `openai/gpt-oss-20b`), legacy alias fallbacks, and child node promotion.
+- [`ARCHITECTURE.md`](file:///Users/abc/Desktop/Gen%20AI%20research%20tool/ARCHITECTURE.md): System architecture and model pool documentation.
 
 ## Verification
-- Automated test suite passed all assertions for delimiter healing, surd reconstruction, completing-the-square repair, and tree consolidation.
 - Production TypeScript build (`npm run build`) completed successfully with 0 errors.
+- Python backend syntax compilation (`py_compile`) passed cleanly.
