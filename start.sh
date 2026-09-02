@@ -14,12 +14,12 @@ echo -e "${BLUE}===============================================${NC}"
 set -e
 
 # Determine Python binary (venv or system python3)
-PYTHON_CMD="python3"
 if [ -f "backend/venv/bin/python" ]; then
-    PYTHON_CMD="backend/venv/bin/python"
-    echo -e "${GREEN}[*] Using virtual environment Python: backend/venv/bin/python${NC}"
+    PYTHON_CMD="$(pwd)/backend/venv/bin/python"
+    echo -e "${GREEN}[*] Using virtual environment Python: $PYTHON_CMD${NC}"
 elif command -v python3 &> /dev/null; then
-    echo -e "${GREEN}[*] Using system Python3: $(which python3)${NC}"
+    PYTHON_CMD="$(which python3)"
+    echo -e "${GREEN}[*] Using system Python3: $PYTHON_CMD${NC}"
 else
     echo -e "${YELLOW}[!] Python3 not found! Please install python3 or set up a venv in backend/.${NC}"
     exit 1
@@ -42,9 +42,15 @@ trap cleanup SIGINT
 # Start Backend Server
 echo -e "${GREEN}[*] Starting FastAPI Backend on http://localhost:8000 ...${NC}"
 cd backend
-../$PYTHON_CMD -m uvicorn main:app --port 8000 --host 127.0.0.1 --reload > server.log 2>&1 &
+"$PYTHON_CMD" -m uvicorn main:app --port 8000 --host 127.0.0.1 --reload > server.log 2>&1 &
 BACKEND_PID=$!
 cd ..
+
+# Ensure Frontend dependencies are installed
+if [ ! -d "frontend/node_modules" ]; then
+    echo -e "${YELLOW}[!] frontend/node_modules not found. Installing frontend dependencies...${NC}"
+    (cd frontend && npm install)
+fi
 
 # Start Frontend Dev Server
 echo -e "${GREEN}[*] Starting Vite Frontend on http://localhost:5173 ...${NC}"

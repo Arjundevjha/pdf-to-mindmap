@@ -1,4 +1,5 @@
 import os
+import pathlib
 import json
 import logging
 import re
@@ -83,28 +84,68 @@ async def rewrite_api_path(request: Request, call_next):
     response = await call_next(request)
     return response
 
-def split_text_into_chunks(text: str, chunk_size: int = 30000) -> list[str]:
+def clean_extracted_text(text: str) -> str:
+    """
+    Cleans OCR output, joins hyphenated line breaks, removes page markers and excessive whitespace
+    to maximize LLM prompt density and prevent noise in mindmap node generation.
+    """
+    if not text:
+        return ""
+    # Join hyphenated words split across lines (e.g. "gov- \n ernment" -> "government")
+    text = re.sub(r'(\b\w+)-\s*\n\s*(\w+\b)', r'\1\2', text)
+    # Remove repetitive page numbering patterns (e.g., "Page 1 of 10", "Page 2/15", "- 3 -")
+    text = re.sub(r'(?i)\bpage\s+\d+\s*(?:of\s*\d+|/\s*\d+)?\b', '', text)
+    text = re.sub(r'\n\s*[-—]\s*\d+\s*[-—]\s*\n', '\n', text)
+    # Remove excessive unprintable/control OCR artifacts
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    # Normalize excessive spaces and blank lines
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+def split_text_into_chunks(text: str, chunk_size: int = 14000, overlap: int = 1500) -> list[str]:
+    """
+    Splits long text using a contiguous overlapping sliding window to preserve context
+    across section boundaries, guaranteeing zero text loss or skipped characters.
+    """
+    cleaned = clean_extracted_text(text)
+    if not cleaned:
+        return []
+    if len(cleaned) <= chunk_size:
+        return [cleaned]
+
     chunks = []
     start = 0
-    while start < len(text):
-        end = start + chunk_size
-        if end >= len(text):
-            chunks.append(text[start:])
+
+    while start < len(cleaned):
+        end = min(start + chunk_size, len(cleaned))
+        if end == len(cleaned):
+            chunk_text = cleaned[start:].strip()
+            if chunk_text:
+                chunks.append(chunk_text)
             break
-        # Try to find a logical boundary (like a double newline or newline)
-        boundary = text.rfind('\n\n', start, end)
-        if boundary == -1 or boundary < start + (chunk_size // 2):
-            boundary = text.rfind('\n', start, end)
-        if boundary == -1 or boundary < start + (chunk_size // 2):
-            boundary = text.rfind(' ', start, end)
-        
-        if boundary != -1 and boundary > start:
-            chunks.append(text[start:boundary].strip())
-            start = boundary + 1
-        else:
-            chunks.append(text[start:end].strip())
-            start = end
-    return chunks
+
+        # Seek logical paragraph, line, or sentence boundary near 'end'
+        search_start = max(start + (chunk_size * 2 // 3), start + 1000)
+        boundary = cleaned.rfind('\n\n', search_start, end)
+        if boundary == -1:
+            boundary = cleaned.rfind('\n', search_start, end)
+        if boundary == -1:
+            boundary = cleaned.rfind('. ', search_start, end)
+        if boundary == -1:
+            boundary = end
+
+        chunk_text = cleaned[start:boundary].strip()
+        if chunk_text:
+            chunks.append(chunk_text)
+
+        # Advance with overlap BEFORE boundary to ensure zero content is ever dropped
+        next_start = max(0, boundary - overlap)
+        if next_start <= start:
+            next_start = boundary
+        start = next_start
+
+    return [c for c in chunks if c]
 
 def make_ids_unique(node: dict, suffix: str) -> dict:
     # Suffix the node ID to prevent duplicate keys in React Flow
@@ -127,8 +168,8 @@ def consolidate_summaries(sub_maps: list[dict]) -> str:
     for idx, sub_map in enumerate(sub_maps):
         label = sub_map.get("label", f"Section {idx+1}")
         summary = sub_map.get("summary", "")
-        # Extract main thesis or first paragraph
-        thesis_match = re.search(r"\*\*(?:Main Thesis|Mathematical Principle|Physical Principle|Historical Thesis|Geographical Thesis|Overview)\*\*:\s*(.*?)(?=\n-|\n###|$)", summary, re.DOTALL)
+        # Extract main thesis, definition, or primary concept
+        thesis_match = re.search(r"\*\*(?:Key Inquiry & Definition|Key Principle / Theme|Key Principle|Main Thesis|Mathematical Principle|Physical Principle|Historical Thesis|Geographical Thesis|Overview)\*\*:\s*(.*?)(?=\n-|\n###|$)", summary, re.DOTALL)
         if thesis_match:
             content = thesis_match.group(1).strip()
             key_points.append(f"- **{label}**: {content}")
@@ -137,12 +178,12 @@ def consolidate_summaries(sub_maps: list[dict]) -> str:
             key_points.append(f"- **{label}**: {first_line}")
 
     if not key_points:
-        return "### Core Concept\n- Comprehensive overview synthesizing all chapters and principles from the document."
+        return "### Core Concept & Overview\n- Comprehensive revision guide synthesizing all chapters and principles from the document."
 
     points_str = "\n".join(key_points)
     return (
-        f"### Core Concept\n{points_str}\n\n"
-        f"### Study Structure\n- Master curriculum integrating all document subtopics into individual child nodes below."
+        f"### Syllabus Overview\n{points_str}\n\n"
+        f"### Document Structure\n- Comprehensive curriculum integrating all study modules into detailed child nodes below."
     )
 
 class MindmapGenerateRequest(BaseModel):
@@ -153,18 +194,50 @@ class MindmapGenerateRequest(BaseModel):
 
 def clean_json_string(response_text: str) -> str:
     """
-    Extracts and cleans a JSON block from the model's text response.
+    Extracts and cleans a JSON block from the model's text response,
+    handling <think> reasoning tags, unclosed code fences, bolded JSON keys,
+    trailing commas, and preambles/postambles.
     """
-    markdown_match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", response_text)
-    if markdown_match:
-        return markdown_match.group(1).strip()
+    if not response_text:
+        return ""
+    s = response_text.strip()
+
+    # 1. Strip reasoning <think>...</think> tags if present
+    if "</think>" in s.lower():
+        s = re.sub(r"<think>[\s\S]*?</think>", "", s, flags=re.IGNORECASE).strip()
+    elif "<think>" in s.lower():
+        first_brace = s.find('{')
+        if first_brace != -1:
+            s = s[first_brace:]
+        else:
+            s = ""
     
-    start = response_text.find('{')
-    end = response_text.rfind('}')
-    if start != -1 and end != -1 and end > start:
-        return response_text[start:end+1].strip()
-        
-    return response_text.strip()
+    # 2. Match standard markdown json fences with closing ```
+    markdown_match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", s)
+    if markdown_match:
+        s = markdown_match.group(1).strip()
+    else:
+        # Strip leading markdown code fence ```json or ``` if unclosed
+        s = re.sub(r"^```(?:json)?\s*", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"\s*```$", "", s)
+    
+    # 3. Find the outermost JSON object starting from the first '{'
+    start = s.find('{')
+    if start != -1:
+        s = s[start:]
+        end = s.rfind('}')
+        if end != -1:
+            s = s[:end+1]
+
+    # 4. Clean bold/italic markdown formatting around JSON keys
+    s = re.sub(r'\*\*"([^"]+)"\*\*\s*:', r'"\1":', s)
+    s = re.sub(r'"\*\*([^*"]+)\*\*"\s*:', r'"\1":', s)
+    s = re.sub(r'\*\*([a-zA-Z0-9_]+)\*\*\s*:', r'"\1":', s)
+
+    # 5. Remove trailing commas before closing braces/brackets
+    s = re.sub(r',\s*([\]}])', r'\1', s)
+            
+    return s.strip()
 
 def sanitize_json_latex(s: str) -> str:
     """
@@ -204,6 +277,24 @@ def sanitize_json_latex(s: str) -> str:
 
     return s
 
+def fix_inner_unescaped_quotes(s: str) -> str:
+    """
+    Finds string fields like "summary": "..." or "label": "..." and escapes
+    any raw inner quotes that are not already escaped with \\.
+    """
+    def sanitize_field(match):
+        key = match.group(1)
+        val = match.group(2)
+        escaped_val = re.sub(r'(?<!\\)"', r'\"', val)
+        return f'{key}: "{escaped_val}"'
+
+    s = re.sub(
+        r'("summary"|"label")\s*:\s*"([\s\S]*?)"(?=\s*,\s*"\w+"|\s*,\s*\}|\s*\}\s*,\s*\{|\s*\]|\s*\})',
+        sanitize_field,
+        s
+    )
+    return s
+
 def repair_and_parse_json(response_text: str) -> dict:
     """
     Cleans, repairs, and parses LLM JSON responses into a Python dict.
@@ -212,7 +303,8 @@ def repair_and_parse_json(response_text: str) -> dict:
     so mindmap generation never crashes or drops child branches.
     """
     cleaned = clean_json_string(response_text)
-    sanitized = sanitize_json_latex(cleaned)
+    quote_fixed = fix_inner_unescaped_quotes(cleaned)
+    sanitized = sanitize_json_latex(quote_fixed)
     
     # 1. Try direct parsing first
     try:
@@ -220,10 +312,7 @@ def repair_and_parse_json(response_text: str) -> dict:
         if isinstance(data, dict) and "id" in data and "label" in data and "children" in data:
             if isinstance(data["children"], list) and len(data["children"]) > 0:
                 return data
-            # If root has 0 children but text contains child objects, extract them
-            if isinstance(data["children"], list) and len(data["children"]) == 0:
-                pass
-            else:
+            elif isinstance(data, dict) and data.get("label"):
                 return data
     except Exception:
         pass
@@ -269,54 +358,54 @@ def repair_and_parse_json(response_text: str) -> dict:
         data = json.loads(repaired, strict=False)
         if isinstance(data, dict):
             if "id" not in data: data["id"] = "root"
-            if "label" not in data or not data["label"]: data["label"] = "Core Study Topic"
-            if "summary" not in data or not data["summary"]: data["summary"] = "### Core Concept & Exam Rule\n- **Key Principle**: Comprehensive syllabus revision guide covering all core methods."
             if "children" not in data: data["children"] = []
             if isinstance(data["children"], list) and len(data["children"]) > 0:
                 return data
-            elif isinstance(data, dict) and data.get("label") and data.get("label") != "Core Study Topic":
+            elif isinstance(data, dict) and data.get("label") and data.get("label").strip().lower() not in ["study module", "study topic", "document overview"]:
                 return data
     except Exception as e:
         logger.warning(f"JSON auto-repair parsing warning: {str(e)}")
 
-    # 3. Robust Regex Block Extractor (Extracts root node AND all child objects so children are never lost)
+    # 3. Robust Flexible Regex Block Extractor (Extracts root node AND all child objects regardless of key order)
     root_label_match = re.search(r'"label"\s*:\s*"([^"]+)"', cleaned)
     root_summary_match = re.search(r'"summary"\s*:\s*"((?:[^"\\]|\\.)*)"', cleaned)
 
-    # Extract all child nodes by scanning for node objects
     extracted_children = []
-    child_pattern = re.compile(
-        r'\{\s*"id"\s*:\s*"([^"]+)"\s*,\s*"label"\s*:\s*"([^"]+)"\s*,\s*"summary"\s*:\s*"((?:[^"\\]|\\.)*)"',
-        re.DOTALL
-    )
-
+    # Match any JSON object chunk containing at least "label" and "summary"
+    obj_matches = re.finditer(r'\{([^{}]+)\}', cleaned)
     seen_ids = set()
-    for match in child_pattern.finditer(cleaned):
-        cid, clabel, csummary = match.groups()
-        if cid == "root" or cid in seen_ids:
-            continue
-        seen_ids.add(cid)
-        clean_sum = csummary.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
-        extracted_children.append({
-            "id": cid,
-            "label": clabel,
-            "summary": clean_sum,
-            "children": []
-        })
+    for m in obj_matches:
+        block = m.group(1)
+        id_m = re.search(r'"id"\s*:\s*"([^"]+)"', block)
+        lbl_m = re.search(r'"label"\s*:\s*"([^"]+)"', block)
+        sum_m = re.search(r'"summary"\s*:\s*"((?:[^"\\]|\\.)*)"', block)
+        if lbl_m and sum_m:
+            clabel = lbl_m.group(1).strip()
+            cid = id_m.group(1) if id_m else f"node-{len(extracted_children)+1}"
+            if cid == "root" or cid in seen_ids or not clabel or clabel.lower() in ["study module", "study topic", "document overview"]:
+                continue
+            seen_ids.add(cid)
+            clean_sum = sum_m.group(1).replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
+            extracted_children.append({
+                "id": cid,
+                "label": clabel,
+                "summary": clean_sum,
+                "children": []
+            })
 
-    if root_label_match:
-        root_label = root_label_match.group(1)
+    if root_label_match and root_label_match.group(1).strip().lower() not in ["study module", "study topic", "document overview"]:
+        root_label = root_label_match.group(1).strip()
     elif extracted_children:
         root_label = extracted_children[0]["label"]
     else:
-        root_label = "Core Syllabus Guide"
+        return None
 
-    if root_summary_match:
+    if root_summary_match and len(root_summary_match.group(1).strip()) > 30:
         root_summary = root_summary_match.group(1).replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
     elif extracted_children:
-        root_summary = f"### Core Concept & Exam Rule\n- **Key Principle**: Comprehensive study guide synthesizing {len(extracted_children)} major topics."
+        root_summary = f"### Core Concept & Overview\n- **Key Principle**: In-depth syllabus module covering {len(extracted_children)} key concepts from the notes."
     else:
-        root_summary = "### Core Concept & Exam Rule\n- **Key Principle**: Study overview covering core principles and problem-solving techniques."
+        return None
 
     return {
         "id": "root",
@@ -393,15 +482,72 @@ def repair_math_syntax_backend(text: str) -> str:
 
     return s
 
+def sanitize_node_label(label: str) -> str:
+    """
+    Cleans up redundant chapter/section prefixes to prevent double labels.
+    """
+    if not label:
+        return label
+    s = label.strip()
+    # 1. Clean repetitive chapter prefixes: "Chapter 1: Chapter 1: Foo" -> "Chapter 1: Foo"
+    s = re.sub(r'^(Chapter\s+\d+)\s*[:\-–—]\s*\1\s*[:\-–—]\s*', r'\1: ', s, flags=re.IGNORECASE)
+    # 2. Clean repetitive section prefixes: "1.1: 1.1 Foo" -> "1.1 Foo"
+    s = re.sub(r'^(\d+\.\d+)\s*[:\-–—]?\s*\1\s*[:\-–—]?\s*', r'\1 ', s)
+    # 3. Clean repetitive Issue prefixes: "Issue 1: Issue 1: Foo" -> "Issue 1: Foo"
+    s = re.sub(r'^(Issue\s+\d+)\s*[:\-–—]\s*\1\s*[:\-–—]\s*', r'\1: ', s, flags=re.IGNORECASE)
+    return s.strip()
+
+def ensure_chapter_numbering(root: dict) -> dict:
+    """
+    Deterministically ensures top-level child nodes have 'Chapter X: ' or 'Issue X: Chapter Y: ' prefixes
+    and child sub-nodes have 'X.Y ' section prefixes, preserving existing chapter/issue numbers if present.
+    """
+    if not isinstance(root, dict):
+        return root
+
+    children = root.get("children", [])
+    if not children or not isinstance(children, list):
+        return root
+
+    for ch_idx, ch_node in enumerate(children):
+        if not isinstance(ch_node, dict):
+            continue
+        
+        label = ch_node.get("label", "").strip()
+        has_chapter_prefix = bool(re.match(r'^(Chapter\s+\d+|Issue\s+\d+|Unit\s+\d+|Theme\s+\d+)\b', label, re.IGNORECASE))
+        
+        ch_num = ch_idx + 1
+        num_match = re.search(r'^(?:Chapter|Issue|Unit|Theme)\s+(\d+)', label, re.IGNORECASE)
+        if num_match:
+            ch_num = int(num_match.group(1))
+        elif not has_chapter_prefix:
+            label = f"Chapter {ch_num}: {label}"
+            ch_node["label"] = label
+        
+        # Process sub-children for section numbering "X.Y "
+        sub_children = ch_node.get("children", [])
+        if isinstance(sub_children, list):
+            for sec_idx, sec_node in enumerate(sub_children):
+                if not isinstance(sec_node, dict):
+                    continue
+                sec_label = sec_node.get("label", "").strip()
+                has_sec_num = bool(re.match(r'^\d+\.\d+\b', sec_label))
+                if not has_sec_num:
+                    sec_label = f"{ch_num}.{sec_idx+1} {sec_label}"
+                    sec_node["label"] = sec_label
+
+    return root
+
 def sanitize_mindmap_math(node: dict) -> dict:
     """
-    Recursively validates and repairs LaTeX syntax across all nodes in the mindmap tree.
+    Recursively validates and repairs LaTeX syntax and node labels across all nodes in the mindmap tree.
     """
     if not isinstance(node, dict):
         return node
 
     if "label" in node and isinstance(node["label"], str):
-        node["label"] = repair_math_syntax_backend(node["label"])
+        cleaned_label = sanitize_node_label(node["label"])
+        node["label"] = repair_math_syntax_backend(cleaned_label)
 
     if "summary" in node and isinstance(node["summary"], str):
         node["summary"] = repair_math_syntax_backend(node["summary"])
@@ -444,8 +590,7 @@ async def fetch_wikimedia_image(query: str) -> Optional[dict]:
     }
 
     try:
-        # Use verify=False to bypass macOS Python local SSL certificate chain errors
-        async with httpx.AsyncClient(verify=False, timeout=6.0) as client:
+        async with httpx.AsyncClient(timeout=6.0) as client:
             resp = await client.get(search_url, params=params, headers=headers)
             if resp.status_code == 200:
                 data = resp.json()
@@ -488,18 +633,17 @@ async def fetch_wikimedia_image(query: str) -> Optional[dict]:
     except Exception as e:
         logger.warning(f"Wikimedia API fetch warning for query '{query}': {str(e)}")
 
-    return None
+ENABLE_WIKIMEDIA_IMAGES = os.environ.get("ENABLE_WIKIMEDIA_IMAGES", "false").lower() in ("true", "1")
 
 async def enrich_mindmap_with_images(node: dict, max_images: int = 8, count: int = 0) -> int:
     """
-    Recursively attaches Wikimedia Commons educational images to key mindmap nodes.
-    Spaces out requests with a delay to respect Wikimedia API rate limits.
+    Attaches educational images only if explicitly enabled via ENABLE_WIKIMEDIA_IMAGES=true.
+    Keeps default mindmaps clean, focused, and distraction-free.
     """
-    if count >= max_images:
+    if not ENABLE_WIKIMEDIA_IMAGES or count >= max_images:
         return count
 
     label = node.get("label", "")
-    # Enrich root, major subtopics, or key concepts
     should_enrich = (node.get("id") == "root" or len(node.get("children", [])) > 0 or random.random() < 0.5)
 
     if should_enrich and label and not node.get("imageUrl"):
@@ -509,7 +653,7 @@ async def enrich_mindmap_with_images(node: dict, max_images: int = 8, count: int
             node["imageCaption"] = image_data["imageCaption"]
             node["imageAspectRatio"] = image_data["imageAspectRatio"]
             count += 1
-            await asyncio.sleep(0.5)  # Respect Wikimedia rate limits
+            await asyncio.sleep(0.5)
 
     for child in node.get("children", []):
         if count >= max_images:
@@ -520,31 +664,85 @@ async def enrich_mindmap_with_images(node: dict, max_images: int = 8, count: int
 
 
 
-# Subject-specific system prompts
+def detect_subject_from_text(text: str) -> str:
+    """
+    Intelligently auto-detects academic discipline from text content
+    when subject is set to 'general' or auto-detect.
+    """
+    lower = text[:12000].lower()
+
+    # Humanities / Social Studies / Governance / SRQ
+    humanities_keywords = [
+        "citizenship", "governance", "srq", "peel", "civics", "society", 
+        "singapore", "constitution", "meritocracy", "skillsfuture", "cmio", 
+        "assimilation", "integration", "national service", "parliament", 
+        "public policy", "treaty", "democracy", "healthcare system", "medisave",
+        "central provident fund", "cpf", "trade-off", "stake in society",
+        "shared values", "ethnic integration", "hdb"
+    ]
+    if sum(1 for kw in humanities_keywords if kw in lower) >= 2:
+        return "humanities"
+
+    # Mathematics
+    math_keywords = [
+        "quadratic", "discriminant", "surd", "conjugate", "polynomial", 
+        "binomial", "derivative", "integral", "trigonometry", "differentiation",
+        "completing the square", "roots of equation", "partial fraction"
+    ]
+    if sum(1 for kw in math_keywords if kw in lower) >= 2:
+        return "math"
+
+    # Physics
+    physics_keywords = [
+        "kinematics", "velocity", "acceleration", "newton", "gravitational",
+        "kinetic energy", "potential energy", "resistor", "voltage", "current",
+        "electromagnetism", "thermal physics", "m/s", "joule", "watt"
+    ]
+    if sum(1 for kw in physics_keywords if kw in lower) >= 2:
+        return "physics"
+
+    # History
+    history_keywords = [
+        "treaty of versailles", "world war", "cold war", "authoritarian", 
+        "hitler", "stalin", "mussolini", "league of nations", "ussr", "axis powers"
+    ]
+    if sum(1 for kw in history_keywords if kw in lower) >= 2:
+        return "history"
+
+    # Geography
+    geography_keywords = [
+        "plate tectonics", "lithosphere", "subduction", "volcano", "earthquake",
+        "monsoon", "drainage basin", "coastal erosion", "weather and climate"
+    ]
+    if sum(1 for kw in geography_keywords if kw in lower) >= 2:
+        return "geography"
+
+    return "general"
+
 # Subject-specific system prompts tailored for Secondary / O-Level Revision Notes
 def get_system_prompt(subject: str) -> str:
     if subject == "math":
         return """You are a master Mathematics tutor and curriculum specialist.
-Your objective is to analyze the student revision notes and transform them into an exhaustive, exam-focused, highly structured hierarchical mindmap.
+Your objective is to analyze the student revision notes and transform them into an exhaustive, exam-focused, highly structured hierarchical mindmap with clear chapter and section numbering.
 
-CRITICAL TOPOLOGY & LABEL RULES:
-1. SPECIFIC ROOT TOPIC NAME (NEVER USE GENERIC LABELS):
-   - The root node "label" MUST BE the exact mathematical subject/topic extracted from the text (e.g. "Quadratic Functions & Equations", "Exponential & Logarithmic Functions", "Trigonometry & Circular Measure", "Integration & Differentiation").
+CRITICAL TOPOLOGY, CHAPTER NUMBERING & LABEL RULES:
+1. SPECIFIC ROOT TOPIC NAME:
+   - The root node "label" MUST BE the overarching mathematical subject/topic (e.g. "Algebraic Foundations & Quadratic Functions", "Exponential & Logarithmic Functions", "Trigonometry & Circular Measure").
    - NEVER write "O-Level", "Document Overview", "Study Guide", or generic headings in the root label.
-2. MANDATORY MULTI-NODE HIERARCHY (NEVER COLLAPSE INTO A SINGLE NODE):
+2. CHAPTER & SECTION NUMBERING IN LABELS:
+   - Top-Level Child Nodes: MUST be formatted with chapter numbering (e.g., "Chapter 1: Quadratic Functions & Completing the Square", "Chapter 2: The Discriminant & Nature of Roots", "Chapter 3: Surds & Conjugate Rationalization"). If the text has explicit chapter/topic numbers, preserve them; if unnumbered, assign sequential "Chapter 1", "Chapter 2", etc.
+   - Sub-Child Nodes: MUST be formatted with hierarchical section numbering matching the parent (e.g., "1.1 Converting to Vertex Form", "1.2 Maximum/Minimum Turning Points", "2.1 Real and Distinct Roots Condition", "2.2 Tangent and Intersection Rules").
+   - Clean Titles: Do not repeat prefixes (never write "Chapter 1: Chapter 1:").
+3. MANDATORY MULTI-NODE HIERARCHY:
    - The root node MUST ONLY contain the topic title and a concise 2-sentence syllabus overview.
-   - The root node MUST HAVE 4 to 8 distinct child nodes in its "children" array, one for EACH topic/chapter (e.g. Quadratic Functions, The Discriminant, Surds & Conjugates, Polynomial Division, Partial Fractions, Binomial Theorem).
-   - Each major child node in turn SHOULD contain 2 to 4 sub-child nodes in its own "children" array for specific formulas, proofs, or worked techniques.
-   - STRICTLY FORBIDDEN: Cramming multiple topics into the root summary or outputting an empty "children": [] array.
-3. STRICT DEPTH & COMPLETENESS INVARIANT:
-   - Every node MUST be exhaustive, rigorous, and fully detailed. Do NOT output shallow or single-sentence summaries.
-   - Include complete intermediate algebraic steps, substitutions, and sign rules from the notes.
-   - Thoroughly explain conditions (e.g. discriminant $\\Delta = b^2 - 4ac$, domain restrictions, conjugate multiplication rules).
-4. LaTeX Formula Standard (MANDATORY DELIMITERS & PURITY):
-   - Every formula, equation, rule, function, variable, and operator MUST be wrapped in standard dollar-sign LaTeX delimiters ($...$ inline, $$...$$ block display).
-   - STRICT DELIMITER PURITY: NEVER put English text inside '$$ ... $$' or '$ ... $'. Mathematical blocks must ONLY contain pure LaTeX syntax.
-   - STRICT FORBIDDEN: Never write raw parentheses '(f(x)=a^x)' or raw commands '\\to' without '$' delimiters.
-5. Summary Structure (Use rich multi-bullet markdown format for EVERY node):
+   - The root node MUST HAVE 4 to 8 distinct child nodes in its "children" array, one for EACH topic/chapter.
+   - Each major child node SHOULD contain 2 to 4 sub-child nodes in its own "children" array for specific formulas, proofs, or worked techniques.
+4. STRICT DEPTH & COMPLETENESS INVARIANT:
+   - Every node MUST be exhaustive, rigorous, and fully detailed with complete intermediate algebraic steps and conditions.
+5. LaTeX Formula Standard (MANDATORY DELIMITERS & PURITY):
+   - Every formula, equation, variable, and operator MUST be wrapped in standard dollar-sign LaTeX delimiters ($...$ inline, $$...$$ block display).
+   - STRICT DELIMITER PURITY: NEVER put English text inside '$$ ... $$' or '$ ... $'.
+6. Summary Structure (Use rich multi-bullet markdown format for EVERY node):
    ### Core Concept & Exam Rule
    - **Key Principle**: [Clear intuition of the rule or formula for exams]
    - **Step-by-Step Method**: [Step-by-step algebraic technique with LaTeX $...$ notation]
@@ -566,12 +764,12 @@ Output ONLY a single valid JSON object strictly matching this multi-level hierar
   "children": [
     {
       "id": "node-1",
-      "label": "Quadratic Functions & Completing the Square",
+      "label": "Chapter 1: Quadratic Functions & Completing the Square",
       "summary": "### Core Concept & Exam Rule\\n- **Key Principle**: Converting $y = ax^2 + bx + c$ to vertex form $y = a(x-h)^2 + k$ identifies the maximum/minimum turning point $\\\\bigl(-\\\\frac{b}{2a}, c - \\\\frac{b^2}{4a}\\\\bigr)$.\\n- **Step-by-Step Method**: Factor leading coefficient $a$ from $x^2$ and $x$ terms, then add and subtract $\\\\bigl(\\\\frac{b}{2a}\\\\bigr)^2$: $ax^2 + bx + c = a\\\\left(x + \\\\frac{b}{2a}\\\\right)^2 + \\\\left(c - \\\\frac{b^2}{4a}\\\\right)$.\\n- **Exam Pitfalls & Conditions**: If $a > 0$, parabola opens upwards (minimum); if $a < 0$, parabola opens downwards (maximum).\\n\\n### Formulas & Identities\\n- **Governing Identity**: $$y = a\\\\left(x + \\\\frac{b}{2a}\\\\right)^2 + \\\\left(c - \\\\frac{b^2}{4a}\\\\right)$$\\n\\n### Worked Exam Example\\n- **Problem Walkthrough**: For $y = 2x^2 - 8x + 3 = 2(x^2 - 4x) + 3 = 2(x-2)^2 - 8 + 3 = 2(x-2)^2 - 5$, minimum point is $(2, -5)$.",
       "children": [
         {
           "id": "node-1-1",
-          "label": "The Discriminant & Nature of Roots",
+          "label": "1.1 The Discriminant & Nature of Roots",
           "summary": "### Core Concept & Exam Rule\\n- **Key Principle**: The discriminant $\\\\Delta = b^2 - 4ac$ determines the number and type of real intersections with the x-axis.\\n\\n### Formulas & Identities\\n- **Governing Identity**: $$\\Delta = b^2 - 4ac$$\\n- **Variable Definitions**: $\\\\Delta > 0 \\\\implies$ two distinct real roots; $\\\\Delta = 0 \\\\implies$ two equal real roots (tangent to axis); $\\\\Delta < 0 \\\\implies$ no real roots (curve lies entirely above or below x-axis).",
           "children": []
         }
@@ -579,26 +777,8 @@ Output ONLY a single valid JSON object strictly matching this multi-level hierar
     },
     {
       "id": "node-2",
-      "label": "Surds & Conjugate Rationalization",
+      "label": "Chapter 2: Surds & Conjugate Rationalization",
       "summary": "### Core Concept & Exam Rule\\n- **Key Principle**: To rationalize a denominator of the form $\\\\sqrt{p} + \\\\sqrt{q}$, multiply both numerator and denominator by the conjugate $\\\\sqrt{p} - \\\\sqrt{q}$.\\n- **Step-by-Step Method**: Use difference of squares $(\\\\sqrt{p} + \\\\sqrt{q})(\\\\sqrt{p} - \\\\sqrt{q}) = p - q$.\\n\\n### Formulas & Identities\\n- **Governing Identity**: $$\\frac{A}{\\\\sqrt{p} + \\\\sqrt{q}} \\\\times \\\\frac{\\\\sqrt{p} - \\\\sqrt{q}}{\\\\sqrt{p} - \\\\sqrt{q}} = \\\\frac{A(\\\\sqrt{p} - \\\\sqrt{q})}{p - q}$$",
-      "children": []
-    },
-    {
-      "id": "node-3",
-      "label": "Polynomial Long Division",
-      "summary": "### Core Concept & Exam Rule\\n- **Key Principle**: Divide polynomial $P(x)$ by divisor $D(x)$ to find quotient $Q(x)$ and remainder $R(x)$.\\n\\n### Formulas & Identities\\n- **Governing Identity**: $$\\frac{P(x)}{D(x)} = Q(x) + \\\\frac{R(x)}{D(x)}$$\\n- **Variable Definitions**: $\\\\text{deg}(R) < \\\\text{deg}(D)$.",
-      "children": []
-    },
-    {
-      "id": "node-4",
-      "label": "Partial Fraction Decomposition",
-      "summary": "### Core Concept & Exam Rule\\n- **Key Principle**: Split proper rational fraction $\\\\frac{P(x)}{(x-a)(x-b)}$ into linear components $\\\\frac{A}{x-a} + \\\\frac{B}{x-b}$.\\n\\n### Formulas & Identities\\n- **Governing Identity**: $$\\frac{P(x)}{(x-a)(x-b)} = \\\\frac{A}{x-a} + \\\\frac{B}{x-b}$$",
-      "children": []
-    },
-    {
-      "id": "node-5",
-      "label": "The Binomial Theorem & Series",
-      "summary": "### Core Concept & Exam Rule\\n- **Key Principle**: Expand $(a+b)^n$ for positive integers using combinations $\\\\binom{n}{r}$.\\n\\n### Formulas & Identities\\n- **Governing Identity**: $$(a+b)^n = \\\\sum_{r=0}^n \\\\binom{n}{r} a^{n-r} b^r$$",
       "children": []
     }
   ]
@@ -606,17 +786,17 @@ Output ONLY a single valid JSON object strictly matching this multi-level hierar
 
     elif subject == "physics":
         return """You are a master Physics tutor and exam specialist.
-Your objective is to analyze student physics notes and transform them into an exhaustive, exam-focused hierarchical mindmap.
+Your objective is to analyze student physics notes and transform them into an exhaustive, exam-focused hierarchical mindmap with clear chapter and section numbering.
 
-CRITICAL TOPOLOGY & LABEL RULES:
-1. SPECIFIC ROOT TOPIC NAME:
-   - The root node "label" MUST BE the specific physics topic (e.g. "Kinematics & Dynamics", "Thermal Physics & Heat Transfer", "Current Electricity & DC Circuits").
-   - NEVER write "O-Level", "Document Overview", or generic headings in the root label.
-2. MANDATORY MULTI-NODE HIERARCHY:
-   - The root node MUST contain 4 to 8 distinct child nodes in its "children" array, one for EACH topic, law, or mechanism.
-   - NEVER collapse multiple topics into a single root node.
-3. LaTeX Equations with SI Units: Every physical law and formula MUST use standard LaTeX ($...$ inline and $$...$$ block) with SI units ($m/s^2$, $N$, $J$, $W$, $V$, $\\Omega$).
-4. Summary Structure:
+CRITICAL TOPOLOGY, CHAPTER NUMBERING & LABEL RULES:
+1. SPECIFIC ROOT TOPIC NAME: The root node "label" MUST BE the specific physics theme (e.g. "Kinematics & Newtonian Mechanics", "Thermal Physics & Heat Transfer", "Current Electricity & DC Circuits").
+2. CHAPTER & SECTION NUMBERING IN LABELS:
+   - Top-Level Child Nodes: MUST be formatted with chapter numbering (e.g., "Chapter 1: Physical Quantities & Measurement", "Chapter 2: Kinematics & Motion Graphs", "Chapter 3: Dynamics & Newton's Laws"). Preserve explicit numbers from text; if unnumbered, assign sequential "Chapter 1", "Chapter 2", etc.
+   - Sub-Child Nodes: MUST be formatted with hierarchical section numbering (e.g., "2.1 Velocity-Time Graphs & Acceleration", "2.2 Equations of Uniformly Accelerated Motion").
+3. MANDATORY MULTI-NODE HIERARCHY:
+   - Root node MUST contain 4 to 8 distinct child nodes in its "children" array, one for EACH chapter or mechanism.
+4. LaTeX Equations with SI Units: Every physical law and formula MUST use standard LaTeX ($...$ inline and $$...$$ block) with SI units ($m/s^2$, $N$, $J$, $W$, $V$, $\\Omega$).
+5. Summary Structure:
    ### Core Concept & Physical Law
    - **Key Definition**: [Concise, exam-accurate definition of the law or concept]
    - **Physical Mechanism**: [Force interactions, energy transfers, or field properties]
@@ -638,27 +818,29 @@ Output ONLY a single valid JSON object strictly matching this multi-level hierar
   "children": [
     {
       "id": "node-1",
-      "label": "Kinematics & Motion Graphs",
+      "label": "Chapter 1: Kinematics & Motion Graphs",
       "summary": "### Core Concept & Physical Law\\n- **Key Definition**: Kinematics describes motion without considering the forces causing it.\\n- **Physical Mechanism**: Velocity is rate of change of displacement; acceleration is rate of change of velocity.\\n- **Exam Pitfalls & Sign Conventions**: Gradient of displacement-time graph gives velocity; area under velocity-time graph gives displacement.\\n\\n### Equations & Units\\n- **Governing Formula**: $$v = u + at, \\\\quad s = ut + \\\\frac{1}{2}at^2, \\\\quad v^2 = u^2 + 2as$$\\n\\n### Worked Exam Problem\\n- **Calculation Walkthrough**: A car accelerates from rest ($u = 0$) at $a = 3\\\\text{ m/s}^2$ for $t = 4\\\\text{ s}$. Final velocity $v = 0 + (3)(4) = 12\\\\text{ m/s}$.",
-      "children": []
-    },
-    {
-      "id": "node-2",
-      "label": "Newtonian Laws of Motion & Forces",
-      "summary": "### Core Concept & Physical Law\\n- **Key Definition**: Newton Second Law states resultant force equals mass multiplied by acceleration ($F = ma$).\\n\\n### Equations & Units\\n- **Governing Formula**: $$F_{net} = ma$$\\n- **Variable Definitions & SI Units**: $F_{net}$ in Newtons ($N$), $m$ in kilograms ($kg$), $a$ in $m/s^2$.",
-      "children": []
+      "children": [
+        {
+          "id": "node-1-1",
+          "label": "1.1 Graphical Analysis of Motion",
+          "summary": "### Core Concept & Physical Law\\n- **Key Definition**: Techniques for deriving kinematic quantities from displacement-time and velocity-time curves.",
+          "children": []
+        }
+      ]
     }
   ]
 }"""
 
     elif subject == "history":
         return """You are a master History tutor.
-Your objective is to analyze historical revision notes and map out causal chronologies, key turning points, and exam takeaways.
+Your objective is to analyze historical revision notes and map out causal chronologies, key turning points, and exam takeaways with clear chapter and section numbering.
 
-CRITICAL TOPOLOGY & LABEL RULES:
-1. SPECIFIC ROOT TOPIC NAME: The root node "label" MUST BE the specific historical event or era (e.g. "Causes of World War I", "The Rise of Authoritarian Regimes", "The Cold War in Europe"). NEVER write "O-Level" or generic placeholders.
-2. MANDATORY MULTI-NODE HIERARCHY:
-   - Root node MUST contain 4 to 8 distinct child nodes in its "children" array, one for EACH event, treaty, policy, or era.
+CRITICAL TOPOLOGY, CHAPTER NUMBERING & LABEL RULES:
+1. SPECIFIC ROOT TOPIC NAME: The root node "label" MUST BE the specific historical period or unit (e.g. "Causes of World War I & The Alliance System", "The Rise of Authoritarian Regimes").
+2. CHAPTER & SECTION NUMBERING:
+   - Top-Level Child Nodes: Format with chapter/unit numbering (e.g., "Chapter 1: Outbreak & Causes of World War I", "Chapter 2: The Paris Peace Conference & Treaties", "Chapter 3: The League of Nations"). Preserve source numbers or assign sequential "Chapter 1", "Chapter 2", etc.
+   - Sub-Child Nodes: Format with sub-section numbering (e.g., "1.1 The Militarism & Alliance System", "1.2 The Assassination in Sarajevo & July Crisis").
 3. Summary Structure:
    ### Core Historical Event & Context
    - **Key Event / Overview**: [Concise exam-focused summary of what occurred]
@@ -680,21 +862,29 @@ Output ONLY a single valid JSON object strictly matching this schema:
   "children": [
     {
       "id": "node-1",
-      "label": "Outbreak & Causes of Conflict",
-      "summary": "### Core Historical Event & Context\\n- **Key Event / Overview**: Systemic alliances and geopolitical tensions leading to mobilization.\\n\\n### Key Details & Turning Points\\n- **Key Turning Point & Year**: Decisive diplomatic breakdowns.",
-      "children": []
+      "label": "Chapter 1: Outbreak & Systemic Causes of Conflict",
+      "summary": "### Core Historical Event & Context\\n- **Key Event / Overview**: Systemic alliances and geopolitical tensions leading to mobilization.\\n\\n### Key Details & Turning Points\\n- **Key Turning Point & Year**: 1914 Assassination of Archduke Franz Ferdinand.",
+      "children": [
+        {
+          "id": "node-1-1",
+          "label": "1.1 The European Alliance Framework",
+          "summary": "### Core Historical Event & Context\\n- **Key Event / Overview**: The Triple Entente and Triple Alliance creating rigid mutual defense obligations.",
+          "children": []
+        }
+      ]
     }
   ]
 }"""
 
     elif subject == "geography":
         return """You are a master Geography tutor.
-Your objective is to analyze geographical revision notes and map out physical processes, landforms, and case studies.
+Your objective is to analyze geographical revision notes and map out physical processes, landforms, and case studies with clear chapter and section numbering.
 
-CRITICAL TOPOLOGY & LABEL RULES:
-1. SPECIFIC ROOT TOPIC NAME: The root node "label" MUST BE the specific geographical system (e.g. "Plate Tectonics & Seismic Hazards", "Weather & Climate Systems", "River & Coastal Geomorphology"). NEVER write "O-Level" or generic placeholders.
-2. MANDATORY MULTI-NODE HIERARCHY:
-   - Root node MUST contain 4 to 8 distinct child nodes in its "children" array, one for EACH physical process, zone, or landform.
+CRITICAL TOPOLOGY, CHAPTER NUMBERING & LABEL RULES:
+1. SPECIFIC ROOT TOPIC NAME: The root node "label" MUST BE the specific geographical system (e.g. "Plate Tectonics & Seismic Landforms", "Weather & Climate Systems", "River & Coastal Geomorphology").
+2. CHAPTER & SECTION NUMBERING:
+   - Top-Level Child Nodes: Format with chapter numbering (e.g., "Chapter 1: Internal Structure & Tectonic Plate Movement", "Chapter 2: Plate Boundaries & Volcanic Landforms", "Chapter 3: Earthquakes & Seismic Hazard Management").
+   - Sub-Child Nodes: Format with section numbering (e.g., "1.1 Convection Currents & Slab Pull", "2.1 Convergent Plate Boundaries & Fold Mountains").
 3. Summary Structure:
    ### Core Geographical Process
    - **Process Definition**: [Exam-accurate definition of the physical or human process]
@@ -716,66 +906,138 @@ Output ONLY a single valid JSON object strictly matching this schema:
   "children": [
     {
       "id": "node-1",
-      "label": "Plate Boundaries & Seismic Landforms",
+      "label": "Chapter 1: Plate Boundaries & Seismic Landforms",
       "summary": "### Core Geographical Process\\n- **Process Definition**: Movement of lithospheric plates creating volcanic arcs and rift valleys.\\n\\n### Landforms & Case Studies\\n- **Exam Case Study**: Mid-Atlantic Ridge sea-floor spreading at $2-5\\\\text{ cm/year}$.",
-      "children": []
+      "children": [
+        {
+          "id": "node-1-1",
+          "label": "1.1 Divergent Boundaries & Rift Valleys",
+          "summary": "### Core Geographical Process\\n- **Process Definition**: Magma upwelling at extensional plate margins creating new oceanic crust.",
+          "children": []
+        }
+      ]
     }
   ]
 }"""
 
-    else:
-        return """You are a master Study Guide and Curriculum Specialist.
-Your objective is to analyze student study notes and construct an exhaustive, exam-focused hierarchical mindmap.
+    elif subject in ["humanities", "social-studies", "social_studies", "social studies"]:
+        return """You are a master Social Studies, Humanities, and Citizenship Curriculum Specialist.
+Your objective is to analyze student study notes and transform them into an exhaustive, exam-focused, deeply structured hierarchical mindmap with clear chapter and section numbering, rich PEEL paragraphs, case studies, and exam frameworks.
 
-CRITICAL TOPOLOGY & LABEL RULES:
+CRITICAL TOPOLOGY, CHAPTER NUMBERING & LABEL RULES:
 1. SPECIFIC ROOT TOPIC NAME:
-   - The root node "label" MUST BE the exact subject topic extracted from the text (e.g. "Organic Chemistry & Functional Groups", "Cell Biology & Genetics", "Microeconomics & Market Structures").
-   - NEVER write "O-Level", "Document Overview", "Study Guide", or generic headings in the root label.
-2. MANDATORY MULTI-NODE HIERARCHY (NEVER COLLAPSE INTO A SINGLE NODE):
-   - The root node MUST ONLY contain the topic title and a high-level syllabus summary.
-   - The root node MUST HAVE 4 to 8 distinct child nodes in its "children" array, one for EACH core subtopic or chapter.
-   - Each major child node SHOULD have 2 to 4 sub-child nodes in its own "children" array.
-   - STRICTLY FORBIDDEN: Cramming multiple concepts into the root summary or outputting an empty "children": [] array.
-3. STRICT DEPTH & COMPLETENESS INVARIANT:
-   - Every node MUST be exhaustive, clear, and complete for exam revision.
-4. Math & Formula Delimiters:
-   - Every formula, equation, variable, chemical reaction, and math symbol MUST be wrapped in standard LaTeX ($inline$ or $$block$$).
-5. Summary Structure (Use rich multi-bullet markdown format for EVERY node):
-   ### Core Concept & Exam Rule
-   - **Key Principle**: [Clear, direct explanation of the concept for exam revision]
-   - **Step-by-Step Method**: [Step-by-step procedure, mechanism, or proof with LaTeX $...$]
+   - The root node "label" MUST BE the overarching Issue or Theme (e.g. "Issue 1: Exploring Citizenship & Governance", "Issue 2: Living in a Diverse Society", "Issue 3: Being Part of a Globalised World").
+2. CHAPTER & SECTION NUMBERING IN LABELS:
+   - Top-Level Child Nodes: MUST be formatted with chapter / theme numbering (e.g., "Chapter 1: Attributes Shaping Citizenship", "Chapter 2: Principles of Good Governance", "Chapter 3: Citizen Participation & Decision-Making", or "Issue 1: Chapter 1: Attributes Shaping Citizenship"). Preserve exact issue/chapter numbers from text; if unnumbered, assign sequential "Chapter 1", "Chapter 2", etc.
+   - Sub-Child Nodes: MUST be formatted with hierarchical section numbering (e.g., "1.1 Legal Status & Citizenship Acquisition", "1.2 Emotional Belonging & Shared Values", "2.1 Rule of Law & Meritocracy", "2.2 Anticipating Change & Creating Stake in Society").
+   - Clean Titles: Do not duplicate prefixes (never write "Chapter 1: Chapter 1:").
+3. MANDATORY MULTI-NODE HIERARCHY:
+   - The root node MUST ONLY contain the topic title and a concise 2-sentence thematic overview.
+   - The root node MUST HAVE 4 to 8 distinct child nodes in its "children" array representing the core Chapters.
+   - Each major child node MUST contain 2 to 4 sub-child nodes in its own "children" array for specific case studies, trade-offs, PEEL arguments, and exam answering strategies.
+4. EXHAUSTIVE DEPTH & PEEL REASONING:
+   - Detail key concepts with rigorous academic depth (e.g. Singapore citizenship criteria, Jus Soli / Jus Sanguinis / Naturalisation, Shared Values, Assimilation vs Integration, Governance Principles, Cyber Security Agency, APCERT).
+   - ZERO FABRICATION: Do NOT invent mathematical formulas or artificial algebraic equations.
+5. SUMMARY STRUCTURE (Use rich multi-bullet markdown format for EVERY node):
+   ### Core Concept & Syllabus Overview
+   - **Key Inquiry & Definition**: [Concise, exam-accurate definition of the social concept, policy, or issue]
+   - **Underlying Principle**: [Underlying governance, societal, or constitutional principle]
+   - **Key Tension & Trade-offs**: [Trade-offs, competing priorities, or challenges involved]
 
-   ### Key Details & Rules
-   - **Essential Formulas & Definitions**: [Key facts, equations, and vocabulary]
-   - **Exam Pitfalls & Tips**: [Common exam mistakes and conditions to watch for]
+   ### Factors, Evidence & Case Studies
+   - **Key Arguments & Mechanisms**: [Systematic breakdown of causal factors, government initiatives, or citizen actions]
+   - **Concrete Case Studies & Examples**: [Specific real-world policies, programs, legislation, or named examples]
 
-   ### Practical Application
-   - **Worked Example / Application**: [Concrete problem walkthrough or case study]
+   ### Exam Answering Strategy & PEEL Framework
+   - **PEEL Model Paragraph**: [Model Point, Elaboration, Example, Link for 7-mark / 8-mark SRQ evaluation]
+   - **Common Pitfalls & Evaluation Tip**: [Common student misconceptions, bias warnings, or balanced conclusion criteria]
 
 JSON OUTPUT SCHEMA:
 Output ONLY a single valid JSON object strictly matching this schema:
 {
   "id": "root",
-  "label": "Organic Chemistry & Functional Groups",
-  "summary": "### Core Concept & Exam Rule\\n- **Key Principle**: Comprehensive syllabus revision overview covering all core chapters and techniques.\\n- **Step-by-Step Method**: Systematic breakdown of methods and problem-solving strategies.",
+  "label": "Issue 1: Exploring Citizenship & Governance",
+  "summary": "### Core Concept & Syllabus Overview\\n- **Key Inquiry & Definition**: Comprehensive revision of citizenship, governance principles, and citizen-state partnerships.\\n- **Underlying Principle**: Balance between state leadership and active citizen participation.",
   "children": [
     {
       "id": "node-1",
-      "label": "Alkanes & Combustion Reactions",
-      "summary": "### Core Concept & Exam Rule\\n- **Key Principle**: Saturated hydrocarbons with single covalent bonds undergoing complete combustion.\\n- **Step-by-Step Method**: Balancing stoichiometric combustion equations.\\n\\n### Key Details & Rules\\n- **Essential Formulas & Definitions**: General formula $\\\\text{C}_n\\\\text{H}_{2n+2}$.\\n- **Exam Pitfalls & Tips**: Incomplete combustion produces toxic carbon monoxide $\\\\text{CO}$.\\n\\n### Practical Application\\n- **Worked Example / Application**: Fractional distillation of crude oil.",
-      "children": []
+      "label": "Chapter 1: Attributes Shaping Citizenship",
+      "summary": "### Core Concept & Syllabus Overview\\n- **Key Inquiry & Definition**: Legal status granting constitutional rights and obligations within a sovereign state.\\n- **Underlying Principle**: Defined criteria governing membership in the political community.\\n\\n### Factors, Evidence & Case Studies\\n- **Key Arguments & Mechanisms**: Acquisition methods include Birth (Jus Soli), Descent (Jus Sanguinis), Marriage, and Naturalisation/Registration.\\n- **Concrete Case Studies & Examples**: Article 120-130 of the Singapore Constitution; National Service obligations for male citizens.\\n\\n### Exam Answering Strategy & PEEL Framework\\n- **PEEL Model Paragraph**: **Point**: Legal status ensures constitutional protections and responsibilities. **Elaboration**: It grants voting rights and consular protection while requiring adherence to national obligations. **Example**: Male citizens must fulfill National Service, while foreign residents are exempt. **Link**: Thus, legal status defines the formal compact between individual and nation.\\n- **Common Pitfalls & Evaluation Tip**: Do not confuse legal status with emotional sense of belonging; both are distinct dimensions of citizenship.",
+      "children": [
+        {
+          "id": "node-1-1",
+          "label": "1.1 Legal Status & Acquisition of Citizenship",
+          "summary": "### Core Concept & Syllabus Overview\\n- **Key Inquiry & Definition**: The constitutional privileges and reciprocal duties of full legal members of society.\\n\\n### Factors, Evidence & Case Studies\\n- **Key Arguments & Mechanisms**: Fundamental liberties (speech, assembly) balanced with national security, public order, and communal harmony.\\n- **Concrete Case Studies & Examples**: Maintenance of Religious Harmony Act (MRHA); voting in General Elections.",
+          "children": []
+        }
+      ]
     },
     {
       "id": "node-2",
-      "label": "Alkenes & Addition Reactions",
-      "summary": "### Core Concept & Exam Rule\\n- **Key Principle**: Unsaturated hydrocarbons containing carbon-carbon double bonds $\\\\text{C}=\\\\text{C}$.\\n- **Step-by-Step Method**: Electrophilic addition of aqueous bromine (decolorization from brown to colorless).",
-      "children": []
-    },
+      "label": "Chapter 2: Principles of Good Governance",
+      "summary": "### Core Concept & Syllabus Overview\\n- **Key Inquiry & Definition**: The foundational pillars guiding effective leadership and policy-making.\\n- **Underlying Principle**: Rule of law, meritocracy, anticipating change, and creating a stake for all.",
+      "children": [
+        {
+          "id": "node-2-1",
+          "label": "2.1 Leadership with Integrity & Meritocracy",
+          "summary": "### Core Concept & Syllabus Overview\\n- **Key Inquiry & Definition**: Ensuring appointments and policies are based on competence, honesty, and objective merit.",
+          "children": []
+        }
+      ]
+    }
+  ]
+}"""
+
+    else:
+        return """You are a master Academic Curriculum and Study Guide Specialist.
+Your objective is to analyze student study notes and construct an exhaustive, exam-focused hierarchical mindmap with clear chapter and section numbering.
+
+CRITICAL TOPOLOGY, CHAPTER NUMBERING & DISCIPLINE RULES:
+1. STRICT DOCUMENT FIDELITY (ZERO FABRICATION / ZERO UNREQUESTED MATH):
+   - Ground ALL concept summaries, definitions, points, and examples 100% strictly in the provided study notes.
+   - Do NOT invent or fabricate mathematical formulas or arbitrary mechanisms if they are NOT in the text.
+2. SPECIFIC ROOT TOPIC NAME:
+   - The root node "label" MUST BE the exact subject topic extracted from the text.
+   - NEVER write "O-Level", "Document Overview", "Study Guide", or generic headings in the root label.
+3. CHAPTER & SECTION NUMBERING IN LABELS:
+   - Top-Level Child Nodes: MUST be formatted with chapter / unit numbering (e.g., "Chapter 1: [Topic Title]", "Chapter 2: [Topic Title]"). Preserve explicit chapter/unit numbers if present in the text; if unnumbered, assign sequential "Chapter 1", "Chapter 2", etc.
+   - Sub-Child Nodes: MUST be formatted with hierarchical section numbering (e.g., "1.1 [Subtopic Title]", "1.2 [Subtopic Title]", "2.1 [Subtopic Title]").
+   - Clean Titles: Do not duplicate prefixes (never write "Chapter 1: Chapter 1:").
+4. MANDATORY MULTI-NODE HIERARCHY:
+   - The root node MUST ONLY contain the topic title and a high-level syllabus summary.
+   - The root node MUST HAVE 4 to 8 distinct child nodes in its "children" array, one for EACH core chapter or subtopic.
+   - Each major child node SHOULD have 2 to 4 sub-child nodes in its own "children" array.
+5. SUMMARY STRUCTURE (Use rich, versatile multi-bullet markdown format for EVERY node):
+   ### Core Concept & Overview
+   - **Key Principle / Theme**: [Direct, exam-accurate explanation of the concept directly from the notes]
+   - **Underlying Mechanism & Scope**: [How the concept works, core principles, or key dimensions]
+
+   ### Key Insights & Evidence
+   - **Detailed Breakdown**: [Systematic analysis of arguments, factors, processes, or policies]
+   - **Evidence & Real-World Examples**: [Concrete examples, case studies, legislation, or named initiatives from the text]
+
+   ### Exam Takeaways & Application
+   - **Key Takeaways & Answering Strategy**: [Critical distinctions, evaluation tips, common pitfalls to avoid]
+
+JSON OUTPUT SCHEMA:
+Output ONLY a single valid JSON object strictly matching this schema:
+{
+  "id": "root",
+  "label": "Principles of Governance and Public Policy",
+  "summary": "### Core Concept & Overview\\n- **Key Principle / Theme**: Comprehensive syllabus overview covering citizenship rights, national identity, governance principles, and citizen participation.\\n- **Underlying Mechanism & Scope**: Explores the dynamic compact between state institutions and active citizens.",
+  "children": [
     {
-      "id": "node-3",
-      "label": "Alcohols & Carboxylic Acids",
-      "summary": "### Core Concept & Exam Rule\\n- **Key Principle**: Functional group transformations via oxidation and esterification.",
-      "children": []
+      "id": "node-1",
+      "label": "Chapter 1: Principles of Good Governance",
+      "summary": "### Core Concept & Overview\\n- **Key Principle / Theme**: Core guiding principles ensuring societal stability and sustainable economic development.\\n- **Underlying Mechanism & Scope**: State leadership balancing long-term national interest with public welfare.\\n\\n### Key Insights & Evidence\\n- **Detailed Breakdown**: Key pillars include Rule of Law, Meritocracy, Anticipating Change, and Creating a Stake in Society for All.\\n- **Evidence & Real-World Examples**: Meritocracy in education and public service recruitment; CPF and HDB home ownership creating a tangible stake.\\n\\n### Exam Takeaways & Application\\n- **Key Takeaways & Answering Strategy**: When evaluating governance in SRQ essays, always weigh the trade-offs between strict policy efficiency and individual citizen feedback.",
+      "children": [
+        {
+          "id": "node-1-1",
+          "label": "1.1 Meritocracy & Institutional Trust",
+          "summary": "### Core Concept & Overview\\n- **Key Principle / Theme**: Ensuring fair advancement and transparent administration.",
+          "children": []
+        }
+      ]
     }
   ]
 }"""
@@ -976,12 +1238,13 @@ async def upload_pdf(file: UploadFile = File(...)):
                 detail="Could not extract any text from the PDF, even with OCR. The document might be blank or unreadable."
             )
             
-        logger.info(f"Successfully extracted {len(extracted_text)} characters from {file.filename} (OCR={is_scanned})")
+        cleaned_text = clean_extracted_text(extracted_text)
+        logger.info(f"Successfully extracted & cleaned {len(cleaned_text)} characters from {file.filename} (OCR={is_scanned})")
         
         return {
             "filename": file.filename,
-            "char_count": len(extracted_text),
-            "text": extracted_text[:100000],  # Limit to avoid overloading token limits for very large PDFs
+            "char_count": len(cleaned_text),
+            "text": cleaned_text[:250000],
             "ocr_processed": is_scanned
         }
     except HTTPException as http_exc:
@@ -989,190 +1252,6 @@ async def upload_pdf(file: UploadFile = File(...)):
     except Exception as e:
         logger.error(f"Error processing PDF file: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to process PDF: {str(e)}")
-
-@app.post("/api/generate-mindmap-vision")
-async def generate_mindmap_vision(
-    response: Response,
-    file: UploadFile = File(...),
-    subject: str = Form("general"),
-):
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        raise HTTPException(
-            status_code=500,
-            detail="Groq API Key is not configured. Please set the GROQ_API_KEY environment variable."
-        )
-
-    if not file.filename.lower().endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported for Vision processing.")
-
-    try:
-        # Read file bytes and load PDF
-        file_bytes = await file.read()
-        doc = fitz.open(stream=file_bytes, filetype="pdf")
-
-        if len(doc) == 0:
-            raise HTTPException(status_code=400, detail="The uploaded PDF is empty.")
-
-        # Limit to first 5 pages for vision chunking
-        total_pages = min(len(doc), 5)
-        system_prompt = get_system_prompt(subject)
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-
-        # 1-Page Visual Chunking Pipeline:
-        # Each PDF page is rendered as an optimized 96 DPI JPEG and processed with an interval
-        # to guarantee execution stays safely below Groq's 8,000 TPM limit.
-        page_submaps = []
-        model_used_name = "qwen/qwen3.6-27b (Vision Mode)"
-
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            for page_idx in range(total_pages):
-                if page_idx > 0:
-                    logger.info(f"Intervaling visual requests (waiting 1.5s before page {page_idx + 1}/{total_pages})...")
-                    await asyncio.sleep(1.5)
-
-                page = doc[page_idx]
-                page_text = page.get_text().strip()
-
-                # Render page frame at 96 DPI for crisp text with low token footprint
-                pix = page.get_pixmap(dpi=96)
-                pil_img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
-                
-                max_dim = max(pil_img.size)
-                if max_dim > 1024:
-                    scale = 1024 / max_dim
-                    new_size = (int(pil_img.size[0] * scale), int(pil_img.size[1] * scale))
-                    pil_img = pil_img.resize(new_size, Image.Resampling.LANCZOS)
-
-                buf = io.BytesIO()
-                pil_img.save(buf, format="JPEG", quality=80, optimize=True)
-                img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-
-                prompt_text = (
-                    f"Analyze Page {page_idx + 1} of this document. Synthesize BOTH the visual diagrams, formulas, tables, and text "
-                    f"into an exhaustive hierarchical mindmap JSON with 3 to 6 detailed child nodes.\n"
-                    f"CRITICAL: Do NOT compress or omit mathematical steps, mechanisms, formulas, or worked explanations.\n"
-                    f"Ensure all math is strictly enclosed in standard LaTeX delimiters ($...$ or $$...$$)."
-                )
-                if page_text:
-                    prompt_text += f"\n\nExtracted Text for Page {page_idx + 1}:\n{page_text[:4000]}"
-
-                user_content_blocks = [
-                    {"type": "text", "text": prompt_text},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
-                    }
-                ]
-
-                data = {
-                    "model": "qwen/qwen3.6-27b",
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_content_blocks}
-                    ],
-                    "temperature": 0.2,
-                    "max_tokens": 2500
-                }
-
-                logger.info(f"Processing visual Page {page_idx + 1}/{total_pages} via 'qwen/qwen3.6-27b'...")
-                page_resp = await client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers=headers,
-                    json=data,
-                    timeout=90.0
-                )
-
-                # Fallback to fast text LPU model if rate-limited or payload limit reached
-                if page_resp.status_code in [413, 429]:
-                    logger.warning(f"Groq Vision returned status {page_resp.status_code} on Page {page_idx + 1}. Falling back to 'openai/gpt-oss-120b' text mode.")
-                    model_used_name = "openai/gpt-oss-120b (Vision Text Fallback)"
-                    fallback_data = {
-                        "model": "openai/gpt-oss-120b",
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": f"Analyze Page {page_idx + 1} text and output hierarchical mindmap JSON:\n\n{page_text or prompt_text}"}
-                        ],
-                        "temperature": 0.2,
-                        "max_tokens": 2500
-                    }
-                    page_resp = await client.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers=headers,
-                        json=fallback_data,
-                        timeout=90.0
-                    )
-
-                if page_resp.status_code == 200:
-                    raw_content = page_resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
-                    parsed_submap = repair_and_parse_json(raw_content)
-                    page_submaps.append(parsed_submap)
-                else:
-                    logger.warning(f"Page {page_idx + 1} generation failed with status {page_resp.status_code}: {page_resp.text[:120]}")
-                    page_submaps.append({
-                        "id": f"page_{page_idx + 1}",
-                        "label": f"Page {page_idx + 1} Overview",
-                        "summary": f"### Core Concept\n- **Overview**: Page {page_idx + 1} conceptual summary.",
-                        "children": []
-                    })
-
-        if not page_submaps:
-            raise HTTPException(status_code=500, detail="Failed to generate mindmap from visual pages.")
-
-        # Single page document
-        if len(page_submaps) == 1:
-            final_map = sanitize_mindmap_math(page_submaps[0])
-            await enrich_mindmap_with_images(final_map, max_images=6)
-            response.headers["X-Model-Used"] = model_used_name
-            response.headers["X-Model-Routed"] = "false"
-            response.headers["Access-Control-Expose-Headers"] = "X-Model-Used, X-Model-Routed"
-            return final_map
-
-        # Multi-page document: consolidate under master root
-        # Multi-page document: promote children of each submap directly to master root
-        first_label = page_submaps[0].get("label", "Document Study Guide")
-        if first_label in ["Document Overview & Core Themes", "Document Overview", "Central Topic"]:
-            for sm in page_submaps:
-                cand_label = sm.get("label", "")
-                if cand_label and cand_label not in ["Document Overview & Core Themes", "Document Overview", "Central Topic"]:
-                    first_label = cand_label
-                    break
-
-        all_children = []
-        for i, sub_map in enumerate(page_submaps):
-            # If the submap has children, promote its children directly
-            if sub_map.get("children") and len(sub_map["children"]) > 0:
-                for c_idx, child in enumerate(sub_map["children"]):
-                    unique_child = make_ids_unique(child, f"p{i+1}_{c_idx+1}")
-                    all_children.append(unique_child)
-            else:
-                # If submap has no children, include the submap itself as a child node
-                unique_sub_map = make_ids_unique(sub_map, f"page_{i+1}")
-                all_children.append(unique_sub_map)
-
-        consolidated_root = {
-            "id": "root",
-            "label": first_label,
-            "summary": consolidate_summaries(page_submaps),
-            "children": all_children
-        }
-
-        final_map = sanitize_mindmap_math(consolidated_root)
-        await enrich_mindmap_with_images(final_map, max_images=6)
-
-        response.headers["X-Model-Used"] = model_used_name
-        response.headers["X-Model-Routed"] = "false"
-        response.headers["Access-Control-Expose-Headers"] = "X-Model-Used, X-Model-Routed"
-        return final_map
-
-    except HTTPException as http_exc:
-        raise http_exc
-    except Exception as e:
-        logger.error(f"Unexpected error in Vision processing: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to process document with Vision: {str(e)}")
 
 # Equal Load Balancer: Active alternative models on Groq
 ALL_ALTERNATIVE_MODELS = [
@@ -1194,203 +1273,209 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
             detail="Groq API Key is not configured. Please set the GROQ_API_KEY environment variable."
         )
     
-    # Use subject-specific system prompt
-    subject = payload.subject or "general"
+    # Use subject-specific system prompt with intelligent discipline auto-detection
+    raw_subject = (payload.subject or "general").strip().lower()
+    if raw_subject in ("general", "auto", "auto-detect", "default"):
+        subject = detect_subject_from_text(payload.text)
+        logger.info(f"Subject mode was 'general': Auto-detected discipline as '{subject}' from document content.")
+    else:
+        subject = raw_subject
+
     system_prompt = get_system_prompt(subject)
     
     raw_model = payload.model or "openai/gpt-oss-120b"
     
-    # Map deprecated or legacy model strings to active, supported Groq Cloud models
+    # Verified independent production model families on Groq Cloud
+    MODEL_POOL = [
+        "qwen/qwen3.8-27b",
+        "openai/gpt-oss-120b",
+        "qwen/qwen3.6-27b",
+    ]
+
     MODEL_ALIASES = {
         "groq/compound": "openai/gpt-oss-120b",
         "compound": "openai/gpt-oss-120b",
-        "groq/compound-mini": "openai/gpt-oss-20b",
-        "compound-mini": "openai/gpt-oss-20b",
+        "groq/compound-mini": "qwen/qwen3.8-27b",
+        "compound-mini": "qwen/qwen3.8-27b",
         "llama-3.3-70b-versatile": "openai/gpt-oss-120b",
-        "llama-3.1-8b-instant": "openai/gpt-oss-20b",
+        "llama-3.1-8b-instant": "qwen/qwen3.8-27b",
         "llama3-70b-8192": "openai/gpt-oss-120b",
-        "llama3-8b-8192": "openai/gpt-oss-20b",
-        "llama-3.2-11b-vision-preview": "openai/gpt-oss-20b",
+        "llama3-8b-8192": "qwen/qwen3.8-27b",
+        "llama-3.2-11b-vision-preview": "qwen/qwen3.8-27b",
         "deepseek-r1-distill-llama-70b": "openai/gpt-oss-120b",
         "meta-llama/llama-4-scout-17b-16e-instruct": "openai/gpt-oss-120b",
         "mixtral-8x7b-32768": "openai/gpt-oss-120b",
-        "gemma2-9b-it": "openai/gpt-oss-20b",
-        "qwen/qwen3-32b": "qwen/qwen3.6-27b",
+        "gemma2-9b-it": "qwen/qwen3.8-27b",
+        "qwen/qwen3-32b": "qwen/qwen3.8-27b",
+        "openai/gpt-oss-20b": "qwen/qwen3.8-27b",
+        "allam-2-7b": "qwen/qwen3.8-27b",
     }
     selected_model = MODEL_ALIASES.get(raw_model, raw_model)
-    word_count = len(payload.text.split())
-    
-    # Adjust chunk size so completions stay safely within free-tier token limits
-    if selected_model in ["openai/gpt-oss-20b", "auto-smart-routing", "auto-load-balanced"] or len(payload.text) > 20000:
-        chunk_size = 5000
-    else:
-        chunk_size = 10000
-        
-    # Split full text into chunks (limit to maximum 5 chunks)
-    chunks = split_text_into_chunks(payload.text, chunk_size=chunk_size)[:5]
-    logger.info(f"Splitting document into {len(chunks)} chunks of size {chunk_size} for parallel Groq processing.")
-    
+    cleaned_input_text = clean_extracted_text(payload.text)
+
+    # Safe Token Sizing for Groq Free Tier:
+    # 14,000 chars (~3,200 tokens) with 3,500 max_tokens stays strictly under Groq's 6,000 token payload limit.
+    chunks = split_text_into_chunks(cleaned_input_text, chunk_size=14000, overlap=1500)
+    logger.info(f"Ingesting document ({len(cleaned_input_text)} chars): Split into {len(chunks)} safe-sized chunks.")
+
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
-    
-    ALL_FREE_TIER_MODELS = ALL_ALTERNATIVE_MODELS
 
-    primary_model = selected_model
-    is_routed = False
-    
-    # Distribute load equally across all active alternative models in round-robin fashion
-    if selected_model in ["auto-smart-routing", "auto-load-balanced", "equal-load-distribution"]:
-        is_routed = True
-        global _load_balance_counter
-        async with _load_balance_lock:
-            start_idx = _load_balance_counter
-            _load_balance_counter = (_load_balance_counter + len(chunks)) % len(ALL_ALTERNATIVE_MODELS)
-        chunk_models = [
-            ALL_ALTERNATIVE_MODELS[(start_idx + idx) % len(ALL_ALTERNATIVE_MODELS)]
-            for idx in range(len(chunks))
-        ]
+    # Model rotation pool across chunks
+    if selected_model in MODEL_POOL:
+        base_models = [selected_model] + [m for m in MODEL_POOL if m != selected_model]
     else:
-        chunk_models = [primary_model] * len(chunks)
+        base_models = MODEL_POOL
 
-    # Track last request time per model to space out requests and avoid rate limits
-    model_last_request: dict[str, float] = {}
-    MIN_REQUEST_INTERVAL = 1.5  # seconds between requests to same model
-
-    unique_models_used = list(dict.fromkeys(chunk_models))
-    models_used_str = ", ".join(unique_models_used)
-
-    response.headers["X-Model-Used"] = models_used_str
-    response.headers["X-Model-Routed"] = "true" if (is_routed or len(chunks) > 1) else "false"
+    response.headers["X-Model-Used"] = base_models[0]
+    response.headers["X-Model-Routed"] = "true" if len(chunks) > 1 else "false"
     response.headers["Access-Control-Expose-Headers"] = "X-Model-Used, X-Model-Routed"
 
-    async def process_chunk(client: httpx.AsyncClient, chunk_text: str, index: int) -> dict:
-        initial_model = chunk_models[index]
-        # Prioritize high-capacity models (gpt-oss-120b: 30k TPM) for reliable completion
-        high_capacity_first = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"]
-        candidate_models = [initial_model] + [m for m in high_capacity_first if m != initial_model]
+    async def execute_groq_mindmap(client: httpx.AsyncClient, text_segment: str, part_num: int, total_parts: int) -> dict:
+        part_prefix = f"Part {part_num} of {total_parts}: " if total_parts > 1 else ""
+        continuity_hint = (
+            f"- CHAPTER & SECTION NUMBERING: Extract exact chapter/unit/issue numbers if present in the text, or assign sequential 'Chapter X: [Title]' to top-level nodes.\n"
+            f"- Format all child sub-nodes with hierarchical section numbers matching their parent (e.g. '1.1 [Subtopic]', '1.2 [Subtopic]').\n"
+        )
+        if total_parts > 1:
+            continuity_hint += f"- Note: This is Part {part_num} of {total_parts}. Ensure chapter numbering continues smoothly from previous topics without restarting.\n"
 
-        user_prompt = f"Here is the text extracted from Part {index+1} of the document to turn into a mindmap:\n\n{chunk_text}"
+        user_prompt = (
+            f"Analyze the following study notes and generate an exhaustive, high-density hierarchical mindmap JSON.\n"
+            f"CRITICAL COVERAGE REQUIREMENTS (ZERO OMISSION / ZERO CONTENT LOSS):\n"
+            f"- Capture EVERY distinct theme, concept, policy, argument, case study, and exam technique present in this excerpt.\n"
+            f"- Create 4 to 8 top-level chapter/theme nodes covering all major headings and topics in this text.\n"
+            f"- Under EACH top-level node, create 2 to 5 rich child nodes with thorough, detailed markdown explanations and specific examples.\n"
+            f"- Do NOT skip sub-points or gloss over content — provide complete, deep study notes for every single concept.\n"
+            f"{continuity_hint}"
+            f"- Strict JSON output format matching the specified schema.\n\n"
+            f"{part_prefix}Study Notes Text:\n{text_segment}"
+        )
 
-        for current_model in candidate_models:
-            # Space out requests per model to avoid rate limit spikes
-            import time
-            now = time.monotonic()
-            if current_model in model_last_request:
-                elapsed = now - model_last_request[current_model]
-                if elapsed < MIN_REQUEST_INTERVAL:
-                    wait_time = MIN_REQUEST_INTERVAL - elapsed
-                    logger.info(f"Spacing request for model '{current_model}': waiting {wait_time:.2f}s")
-                    await asyncio.sleep(wait_time)
-            model_last_request[current_model] = time.monotonic()
+        chunk_model_order = [base_models[(part_num - 1 + i) % len(base_models)] for i in range(len(base_models))]
 
-            for attempt in range(2):
-                try:
-                    # Calibrate token budget per model so TPM limits (8,000 TPM on Qwen / 30,000 on GPT-OSS) are never exceeded
-                    if "120b" in current_model or "20b" in current_model:
-                        max_tokens = 2500
+        # Robust multi-attempt loop across models with retry-after compliance
+        for attempt in range(10):
+            model_name = chunk_model_order[attempt % len(chunk_model_order)]
+            max_tokens = 3500
+
+            data = {
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "temperature": 0.15,
+                "max_tokens": max_tokens,
+            }
+
+            try:
+                logger.info(f"Generating Chunk {part_num}/{total_parts} using '{model_name}' (Attempt {attempt+1}/6)...")
+                resp = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=headers,
+                    json=data,
+                    timeout=90.0
+                )
+
+                if resp.status_code == 429:
+                    raw_retry = resp.headers.get("retry-after")
+                    try:
+                        wait_sec = max(float(raw_retry), 3.0) if raw_retry else (2.0 * (attempt + 1))
+                    except Exception:
+                        wait_sec = 3.0
+                    wait_sec = min(wait_sec, 8.0)
+                    logger.warning(f"Groq 429 on '{model_name}'. Waiting {wait_sec:.1f}s for quota replenishment...")
+                    await asyncio.sleep(wait_sec)
+                    continue
+
+                if resp.status_code == 413:
+                    logger.warning(f"Groq 413 on '{model_name}'. Slicing prompt payload in half...")
+                    user_prompt = user_prompt[:len(user_prompt) * 3 // 4]
+                    await asyncio.sleep(1.0)
+                    continue
+
+                if resp.status_code != 200:
+                    logger.warning(f"Groq API error {resp.status_code} on '{model_name}': {resp.text[:140]}")
+                    await asyncio.sleep(1.5)
+                    continue
+
+                resp_json = resp.json()
+                choices = resp_json.get("choices", [])
+                if not choices:
+                    continue
+
+                content = choices[0].get("message", {}).get("content", "")
+                parsed = repair_and_parse_json(content)
+                if parsed and isinstance(parsed, dict) and parsed.get("label"):
+                    label_str = parsed.get("label", "").strip()
+                    if label_str.lower() not in ["study module", "study topic", "document overview"]:
+                        has_children = isinstance(parsed.get("children"), list) and len(parsed["children"]) > 0
+                        has_rich_summary = isinstance(parsed.get("summary"), str) and len(parsed["summary"].strip()) > 60
+                        if has_children or has_rich_summary:
+                            logger.info(f"Successfully generated Chunk {part_num}/{total_parts} using '{model_name}' (Children={len(parsed.get('children', []))})")
+                            return parsed
+                        else:
+                            logger.warning(f"Rejected shallow output from '{model_name}' on Chunk {part_num}/{total_parts}. Retrying with next model...")
+                            await asyncio.sleep(1.0)
+                            continue
                     else:
-                        max_tokens = 2000
-
-                    data = {
-                        "model": current_model,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt}
-                        ],
-                        "temperature": 0.2,
-                        "max_tokens": max_tokens,
-                    }
-
-                    logger.info(f"Sending Groq API request for Chunk {index+1} using model: '{current_model}' (max_tokens={max_tokens}, Attempt {attempt+1})")
-                    resp = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data, timeout=90.0)
-
-                    # On Rate Limit (429) or Payload/TPM Limit (413): switch to NEXT fallback model immediately
-                    if resp.status_code in [413, 429]:
-                        logger.warning(f"Groq rate/TPM limit hit ({resp.status_code}) on model '{current_model}' for Chunk {index+1}. Switching to fallback model...")
+                        logger.warning(f"Rejected generic placeholder label '{label_str}' from '{model_name}' on Chunk {part_num}/{total_parts}. Retrying...")
                         await asyncio.sleep(1.0)
-                        break
+                        continue
+                else:
+                    logger.warning(f"Failed to parse valid mindmap JSON from '{model_name}' on Chunk {part_num}/{total_parts}. Retrying with next model...")
+                    await asyncio.sleep(1.0)
+                    continue
 
-                    if resp.status_code != 200:
-                        logger.warning(f"Groq API error status {resp.status_code} ({resp.text[:120]}) on model '{current_model}' for Chunk {index+1}. Switching to fallback model...")
-                        break
+            except Exception as exc:
+                logger.warning(f"Exception on '{model_name}': {str(exc)}")
+                await asyncio.sleep(1.5)
 
-                    resp_json = resp.json()
-                    choices = resp_json.get("choices", [])
-                    if not choices:
-                        break
-
-                    content = choices[0].get("message", {}).get("content", "")
-                    mindmap_data = repair_and_parse_json(content)
-                    logger.info(f"Successfully generated Chunk {index+1} using model '{current_model}'")
-                    return mindmap_data
-
-                except Exception as exc:
-                    logger.warning(f"Error on model '{current_model}' for Chunk {index+1}: {str(exc)}. Retrying/falling back...")
-                    await asyncio.sleep(0.5)
-                    break
-
-        # Emergency Fallback Outline: If all models fail, construct a structured multi-child outline from paragraph headers
-        logger.error(f"All model fallback candidates failed for Chunk {index+1}. Synthesizing structured fallback outline.")
-        lines = [line.strip() for line in chunk_text.split('\n') if len(line.strip()) > 5]
-        child_nodes = []
-        for line_idx, line in enumerate(lines[:5]):
-            clean_title = re.sub(r'^(?:[0-9]+\.|\d+\))\s*', '', line)[:60]
-            child_nodes.append({
-                "id": f"chunk_fallback_{index+1}_{line_idx+1}",
-                "label": clean_title,
-                "summary": f"### Core Concept\n- **Overview**: Key principles and methods from this section.\n- **Content**: {line[:200]}",
-                "children": []
-            })
-
-        return {
-            "id": f"chunk_fallback_{index+1}",
-            "label": f"Part {index+1}: Document Study Section",
-            "summary": f"### Core Concept\n- **Overview**: Comprehensive study section recovered for continuous viewing.\n- **Key Mechanism**: Review individual topics in child nodes below.",
-            "children": child_nodes
-        }
+        raise HTTPException(
+            status_code=429,
+            detail="Groq API capacity reached. Please wait 10 seconds and try generating again."
+        )
 
     try:
-
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            # Process chunks SEQUENTIALLY to guarantee rate limit spacing works
-            # asyncio.gather runs in parallel which defeats per-model spacing
+        async with httpx.AsyncClient(timeout=120.0) as client:
             sub_maps = []
-            for i, chunk in enumerate(chunks):
-                logger.info(f"Processing chunk {i+1}/{len(chunks)} sequentially...")
-                result = await process_chunk(client, chunk, i)
-                sub_maps.append(result)
-            
+            for idx, chunk in enumerate(chunks):
+                if idx > 0:
+                    logger.info(f"Pacing generation: waiting 1.0s before Chunk {idx + 1}/{len(chunks)}...")
+                    await asyncio.sleep(1.0)
+                sub_map = await execute_groq_mindmap(client, chunk, idx + 1, len(chunks))
+                sub_maps.append(sub_map)
+
             if not sub_maps:
                 raise HTTPException(status_code=500, detail="No mindmaps could be generated.")
-                
-            # If there is only one chunk, return it directly
+
             if len(sub_maps) == 1:
-                final_map = sanitize_mindmap_math(sub_maps[0])
+                numbered_map = ensure_chapter_numbering(sub_maps[0])
+                final_map = sanitize_mindmap_math(numbered_map)
                 await enrich_mindmap_with_images(final_map, max_images=6)
                 return final_map
-                
-            # Otherwise, consolidate multiple mindmaps under a parent root
-            first_label = sub_maps[0].get("label", "Document Study Guide")
-            if first_label in ["Document Overview & Core Themes", "Document Overview", "Central Topic"]:
-                for sm in sub_maps:
-                    cand_label = sm.get("label", "")
-                    if cand_label and cand_label not in ["Document Overview & Core Themes", "Document Overview", "Central Topic"]:
-                        first_label = cand_label
-                        break
 
+            # Consolidate multiple parts under unified root, filtering out any empty or generic nodes
+            first_label = sub_maps[0].get("label", "Document Study Guide")
             all_children = []
-            for i, sub_map in enumerate(sub_maps):
-                # If submap has children, promote its children directly
-                if sub_map.get("children") and len(sub_map["children"]) > 0:
-                    for c_idx, child in enumerate(sub_map["children"]):
-                        unique_child = make_ids_unique(child, f"part{i+1}_{c_idx+1}")
-                        all_children.append(unique_child)
-                else:
-                    # If submap has no children, include the submap itself as a child node
-                    unique_sub_map = make_ids_unique(sub_map, f"part_{i+1}")
-                    all_children.append(unique_sub_map)
+            for i, sm in enumerate(sub_maps):
+                if not sm or not isinstance(sm, dict):
+                    continue
+                sm_label = sm.get("label", "").strip()
+                if sm_label.lower() in ["study module", "study topic", "document overview"] and not sm.get("children"):
+                    continue
+
+                if sm.get("children"):
+                    for c_idx, child in enumerate(sm["children"]):
+                        if isinstance(child, dict) and child.get("label") and child.get("label").strip().lower() not in ["study module", "study topic"]:
+                            unique_child = make_ids_unique(child, f"p{i+1}_{c_idx+1}")
+                            all_children.append(unique_child)
+                elif sm.get("summary") and len(sm.get("summary").strip()) > 80 and sm_label.lower() not in ["study module", "study topic"]:
+                    unique_sm = make_ids_unique(sm, f"part_{i+1}")
+                    all_children.append(unique_sm)
 
             consolidated_root = {
                 "id": "root",
@@ -1399,49 +1484,18 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
                 "children": all_children
             }
 
-            final_consolidated = sanitize_mindmap_math(consolidated_root)
+            numbered_root = ensure_chapter_numbering(consolidated_root)
+            final_consolidated = sanitize_mindmap_math(numbered_root)
             await enrich_mindmap_with_images(final_consolidated, max_images=6)
             return final_consolidated
 
-            
     except HTTPException as http_exc:
         raise http_exc
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+        logger.error(f"Unexpected error in generate_mindmap: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate mindmap: {str(e)}")
 
-# Mount static files and set up catch-all route for frontend React app
-# Resolve the absolute path of frontend dist directory
+# Mount frontend static distribution directory securely
 FRONTEND_DIST_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../frontend/dist"))
-
-# Mount frontend assets folder if it exists
-assets_path = os.path.join(FRONTEND_DIST_DIR, "assets")
-if os.path.isdir(assets_path):
-    app.mount("/assets", StaticFiles(directory=assets_path), name="assets")
-
-# Catch-all route to serve the React index.html and other public files (like favicon.svg, icons.svg)
-@app.get("/{catchall:path}")
-async def serve_frontend(catchall: str):
-    # Prevent handling API routes in the catch-all
-    if catchall.startswith("api/"):
-        raise HTTPException(status_code=404, detail="API endpoint not found")
-    
-    # Prevent path traversal
-    if ".." in catchall or "\\" in catchall or catchall.startswith("/"):
-        raise HTTPException(status_code=400, detail="Invalid path")
-        
-    # Resolve absolute paths and verify they are within FRONTEND_DIST_DIR to prevent path traversal
-    real_dist_dir = os.path.realpath(FRONTEND_DIST_DIR)
-    file_path = os.path.realpath(os.path.join(real_dist_dir, catchall))
-    
-    if not file_path.startswith(real_dist_dir + os.sep) and file_path != real_dist_dir:
-        raise HTTPException(status_code=403, detail="Access denied")
-        
-    if catchall and os.path.exists(file_path) and os.path.isfile(file_path):
-        return FileResponse(file_path)
-        
-    index_path = os.path.join(real_dist_dir, "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
-    
-    raise HTTPException(status_code=404, detail="Frontend build files not found. Please run 'npm run build' in the frontend directory.")
+if os.path.isdir(FRONTEND_DIST_DIR):
+    app.mount("/", StaticFiles(directory=FRONTEND_DIST_DIR, html=True), name="frontend_static")

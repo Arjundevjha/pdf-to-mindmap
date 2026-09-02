@@ -4,14 +4,13 @@ import { useToast } from './Toast';
 import type { MindmapNode } from './MindmapCanvas';
 
 const getSingleModelFriendlyName = (id: string) => {
-  if (id.includes('vision')) return 'Qwen 3.6 Vision (Multimodal)';
   if (id.includes('gpt-oss-120b')) return 'GPT-OSS 120B';
+  if (id.includes('qwen3.8-27b')) return 'Qwen 3.8 27B';
+  if (id.includes('qwen3.6-27b')) return 'Qwen 3.6 27B';
+  if (id.includes('compound-mini')) return 'Groq Compound Mini';
+  if (id.includes('compound')) return 'Groq Compound';
+  if (id.includes('allam-2-7b')) return 'Allam 2 7B';
   if (id.includes('gpt-oss-20b')) return 'GPT-OSS 20B';
-  if (id.includes('qwen3.6-27b') || id.includes('qwen')) return 'Qwen 3.6 27B';
-  if (id.includes('compound-mini')) return 'GPT-OSS 20B (Compound Mini Alias)';
-  if (id.includes('compound')) return 'GPT-OSS 120B (Compound Alias)';
-  if (id.includes('llama-3.3-70b') || id.includes('llama3-70b')) return 'GPT-OSS 120B (Routed)';
-  if (id.includes('llama-3.1-8b') || id.includes('llama3-8b')) return 'GPT-OSS 20B (Routed)';
   return id;
 };
 
@@ -100,43 +99,9 @@ export function UploadZone({ onMindmapGenerated, selectedModel, selectedSubject 
       setFileName(file.name);
       setErrorMessage('');
 
-      // Dedicated Fast-Track Vision Mode (Qwen 3.6 27B Vision)
-      if (selectedModel === 'qwen/qwen3.6-27b-vision') {
-        setStatus('generating');
-        setProgress(30);
-
-        const visionFormData = new FormData();
-        visionFormData.append('file', file);
-        visionFormData.append('subject', selectedSubject);
-
-        const visionResponse = await fetch(`${API_BASE}/generate-mindmap-vision`, {
-          method: 'POST',
-          body: visionFormData,
-        });
-
-        if (!visionResponse.ok) {
-          const errorData = await visionResponse.json();
-          throw new Error(errorData.detail || "Failed to generate mindmap with Vision.");
-        }
-
-        setProgress(90);
-        const mindmapData = await visionResponse.json();
-
-        setStatus('success');
-        setProgress(100);
-        setTimeout(() => {
-          onMindmapGenerated(file.name, mindmapData);
-          toast.success("Multimodal Vision processing completed! Visual diagrams & text synthesized.");
-          setStatus('idle');
-          setProgress(0);
-          setFileName('');
-        }, 800);
-        return;
-      }
-
-      // Standard Digital / Text Pipeline
+      // High-Speed OCR / Text Pipeline
       setStatus('extracting');
-      setProgress(15);
+      setProgress(20);
 
       // Create FormData
       const formData = new FormData();

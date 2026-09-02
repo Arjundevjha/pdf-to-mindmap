@@ -134,8 +134,11 @@ export default function App() {
     const validModels = [
       'auto-smart-routing',
       'openai/gpt-oss-120b',
+      'qwen/qwen3.8-27b',
       'qwen/qwen3.6-27b',
-      'openai/gpt-oss-20b'
+      'groq/compound',
+      'groq/compound-mini',
+      'allam-2-7b'
     ];
     return (saved && validModels.includes(saved)) ? saved : 'auto-smart-routing';
   });
@@ -725,16 +728,16 @@ export default function App() {
               onChange={(e) => setSelectedModel(e.target.value)}
               className="w-full text-xs bg-slate-50 border border-slate-200 text-slate-700 px-2.5 py-1.5 focus:outline-none focus:border-slate-300 font-medium select-none cursor-pointer rounded-none"
             >
-              <option value="auto-smart-routing">Auto (Load Balanced across Active Models) (Recommended)</option>
-              <optgroup label="Multimodal Vision Models (Diagrams & OCR)">
-                <option value="qwen/qwen3.6-27b-vision">👁️ Qwen 3.6 27B Vision (Diagrams, Visual Math & OCR)</option>
-              </optgroup>
+              <option value="auto-smart-routing">Auto (Load Balanced across 6 Active Models) (Recommended)</option>
               <optgroup label="Flagship & Large Models (Text)">
-                <option value="openai/gpt-oss-120b">GPT-OSS 120B (OpenAI Flagship)</option>
-                <option value="qwen/qwen3.6-27b">Qwen 3.6 27B (High Capacity Text)</option>
+                <option value="openai/gpt-oss-120b">GPT-OSS 120B (OpenAI Flagship - 30k TPM)</option>
+                <option value="qwen/qwen3.8-27b">Qwen 3.8 27B (High-Precision - 128k Context)</option>
+                <option value="qwen/qwen3.6-27b">Qwen 3.6 27B (Reasoning Model - 128k Context)</option>
+                <option value="groq/compound">Groq Compound (Multi-Expert Engine)</option>
               </optgroup>
               <optgroup label="Fast & High-Throughput Models (Text)">
-                <option value="openai/gpt-oss-20b">GPT-OSS 20B (Ultra-Fast 30k TPM)</option>
+                <option value="groq/compound-mini">Groq Compound Mini (Fast Pipeline)</option>
+                <option value="allam-2-7b">Allam 2 7B (Lightweight & Rapid)</option>
               </optgroup>
             </select>
 
@@ -751,6 +754,7 @@ export default function App() {
               className="w-full text-xs bg-slate-50 border border-slate-200 text-slate-700 px-2.5 py-1.5 focus:outline-none focus:border-slate-300 font-medium select-none cursor-pointer rounded-none"
             >
               <option value="general">General (Auto-detect)</option>
+              <option value="humanities">Social Studies / Humanities (SRQ, PEEL, Governance)</option>
               <option value="math">Mathematics (Formulas, Proofs, 2D Plots)</option>
               <option value="physics">Physics (Physical Laws, Variables, Curves)</option>
               <option value="geography">Geography (Processes, Cycles, Diagrams)</option>
