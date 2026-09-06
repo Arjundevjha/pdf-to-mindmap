@@ -46,6 +46,7 @@ try:
         get_tesseract_cmd,
         ensure_tesseract_installed,
         configure_tessdata_prefix,
+        start_background_provisioning,
     )
 except ImportError:
     try:
@@ -53,6 +54,7 @@ except ImportError:
             get_tesseract_cmd,
             ensure_tesseract_installed,
             configure_tessdata_prefix,
+            start_background_provisioning,
         )
     except ImportError:
         def get_tesseract_cmd() -> Optional[str]:
@@ -62,12 +64,14 @@ except ImportError:
             return bool(get_tesseract_cmd())
         def configure_tessdata_prefix() -> Optional[str]:
             return None
+        def start_background_provisioning() -> None:
+            pass
 
-# Auto-provision or verify Tesseract OCR engine on module load
+# Start background provisioning asynchronously so uvicorn binds to $PORT immediately
 try:
-    ensure_tesseract_installed()
+    start_background_provisioning()
 except Exception as _tess_err:
-    logging.getLogger("pdf-to-mindmap-backend").warning(f"Initial Tesseract check returned: {_tess_err}")
+    logging.getLogger("pdf-to-mindmap-backend").warning(f"Initial Tesseract trigger note: {_tess_err}")
 
 # Module-level worker function for parallel OCR processing
 def ocr_image_bytes(img_data: bytes) -> str:
@@ -1177,12 +1181,6 @@ Output ONLY a single valid JSON object strictly matching this schema:
 @app.get("/api/health")
 def health_check():
     tess_cmd = get_tesseract_cmd()
-    if not tess_cmd:
-        try:
-            ensure_tesseract_installed()
-            tess_cmd = get_tesseract_cmd()
-        except Exception:
-            pass
     return {
         "status": "ok",
         "tesseract_available": bool(tess_cmd),
