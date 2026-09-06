@@ -1,4 +1,7 @@
 import os
+# Prevent OpenMP thread contention / deadlocks in cloud containers (Render / Docker)
+os.environ["OMP_THREAD_LIMIT"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
 import pathlib
 import json
 import logging
@@ -85,8 +88,9 @@ def ocr_image_bytes(img_data: bytes) -> str:
             tess_bin = get_tesseract_cmd()
         if tess_bin:
             pytesseract.pytesseract.tesseract_cmd = tess_bin
+        configure_tessdata_prefix()
         image = Image.open(io.BytesIO(img_data))
-        text = pytesseract.image_to_string(image, lang="eng", config="--psm 3")
+        text = pytesseract.image_to_string(image, lang="eng", config="--psm 3", timeout=25)
         return text.strip()
     except Exception as e:
         return f"[OCR Error: {str(e)}]"
@@ -1355,10 +1359,10 @@ async def upload_pdf(file: UploadFile = File(...)):
         if is_scanned or not "".join(full_text).strip():
             logger.info(f"Digital text insufficient ({total_digital_chars} chars). Performing parallel OCR on PDF pages...")
             
-            # Render all page frames to images in the main thread with 150 DPI for clean OCR
+            # Render all page frames to images in the main thread with 120 DPI for high clarity and low RAM
             page_images = []
             for page in doc:
-                pix = page.get_pixmap(dpi=150)
+                pix = page.get_pixmap(dpi=120)
                 page_images.append(pix.tobytes("png"))
 
                 
@@ -1374,11 +1378,8 @@ async def upload_pdf(file: UploadFile = File(...)):
                     )
                 )
 
-            # Process Tesseract OCR in parallel using ThreadPoolExecutor
-            # Tesseract runs as an external subprocess via pytesseract releasing the Python GIL,
-            # avoiding Linux multiprocessing fork restrictions and IPC memory serialization failures.
-            cpu_count = os.cpu_count() or 4
-            workers = min(len(doc), cpu_count, 8)
+            # Process Tesseract OCR using max 2 workers to fit comfortably within 512MB cloud container RAM
+            workers = min(len(page_images), 2)
             logger.info(f"Executing Tesseract OCR on {len(page_images)} page(s) using {workers} worker(s) (Binary: {tess_cmd})...")
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
