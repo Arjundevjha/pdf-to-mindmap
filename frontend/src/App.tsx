@@ -133,11 +133,12 @@ export default function App() {
     const saved = localStorage.getItem('pdf_mindmaps_model');
     const validModels = [
       'auto-smart-routing',
+      'openai/gpt-oss-20b',
+      'gemini-2.5-flash',
+      'gemini-3.5-flash',
       'openai/gpt-oss-120b',
       'qwen/qwen3.8-27b',
       'qwen/qwen3.6-27b',
-      'groq/compound',
-      'groq/compound-mini',
       'allam-2-7b'
     ];
     return (saved && validModels.includes(saved)) ? saved : 'auto-smart-routing';
@@ -728,16 +729,19 @@ export default function App() {
               onChange={(e) => setSelectedModel(e.target.value)}
               className="w-full text-xs bg-slate-50 border border-slate-200 text-slate-700 px-2.5 py-1.5 focus:outline-none focus:border-slate-300 font-medium select-none cursor-pointer rounded-none"
             >
-              <option value="auto-smart-routing">Auto (Load Balanced across 6 Active Models) (Recommended)</option>
-              <optgroup label="Flagship & Large Models (Text)">
-                <option value="openai/gpt-oss-120b">GPT-OSS 120B (OpenAI Flagship - 30k TPM)</option>
+              <option value="auto-smart-routing">Auto (Load-Balanced Across Groq & Gemini) (Recommended)</option>
+              <optgroup label="Google Gemini Suite">
+                <option value="gemini-2.5-flash">Gemini 2.5 Flash (Google AI - High Speed)</option>
+                <option value="gemini-3.5-flash">Gemini 3.5 Flash (Google AI - Advanced)</option>
+              </optgroup>
+              <optgroup label="Fast & High-Throughput (Ultra-Low Latency)">
+                <option value="openai/gpt-oss-20b">GPT-OSS 20B (Ultra-Fast ~580 tok/s)</option>
+                <option value="allam-2-7b">Allam 2 7B (Lightweight & Rapid)</option>
+              </optgroup>
+              <optgroup label="Flagship & High-Precision (Deep Reasoning)">
+                <option value="openai/gpt-oss-120b">GPT-OSS 120B (OpenAI Flagship - 128k Context)</option>
                 <option value="qwen/qwen3.8-27b">Qwen 3.8 27B (High-Precision - 128k Context)</option>
                 <option value="qwen/qwen3.6-27b">Qwen 3.6 27B (Reasoning Model - 128k Context)</option>
-                <option value="groq/compound">Groq Compound (Multi-Expert Engine)</option>
-              </optgroup>
-              <optgroup label="Fast & High-Throughput Models (Text)">
-                <option value="groq/compound-mini">Groq Compound Mini (Fast Pipeline)</option>
-                <option value="allam-2-7b">Allam 2 7B (Lightweight & Rapid)</option>
               </optgroup>
             </select>
 

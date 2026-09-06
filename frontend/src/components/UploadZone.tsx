@@ -4,13 +4,14 @@ import { useToast } from './Toast';
 import type { MindmapNode } from './MindmapCanvas';
 
 const getSingleModelFriendlyName = (id: string) => {
-  if (id.includes('gpt-oss-120b')) return 'GPT-OSS 120B';
+  if (id.includes('gemini-2.5-flash')) return 'Gemini 2.5 Flash';
+  if (id.includes('gemini-3.5-flash')) return 'Gemini 3.5 Flash';
+  if (id.includes('gemini')) return 'Google Gemini';
+  if (id.includes('gpt-oss-20b')) return 'GPT-OSS 20B (Ultra-Fast)';
+  if (id.includes('gpt-oss-120b')) return 'GPT-OSS 120B (Flagship)';
   if (id.includes('qwen3.8-27b')) return 'Qwen 3.8 27B';
   if (id.includes('qwen3.6-27b')) return 'Qwen 3.6 27B';
-  if (id.includes('compound-mini')) return 'Groq Compound Mini';
-  if (id.includes('compound')) return 'Groq Compound';
   if (id.includes('allam-2-7b')) return 'Allam 2 7B';
-  if (id.includes('gpt-oss-20b')) return 'GPT-OSS 20B';
   return id;
 };
 
