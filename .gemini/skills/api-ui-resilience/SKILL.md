@@ -71,3 +71,26 @@ These guidelines document standard architectural, API, and UI design invariants 
   - Space out media fetch queries with `await asyncio.sleep(0.5)` between nodes to prevent `HTTP 429 Too Many Requests` from Wikimedia API.
 - **Local SSL Verification**:
   - Set `verify=False` on `httpx.AsyncClient` when fetching educational media in local macOS Python environments to prevent local SSL certificate chain errors.
+
+## 10. Tri-Cloud LLM Federation & Dynamic Failover (Groq, Gemini, OpenRouter)
+- **Provider Gateway Matrix**:
+  - **Groq Cloud**: Direct endpoint `https://api.groq.com/openai/v1/chat/completions`. Fast inference models (`openai/gpt-oss-20b`, `openai/gpt-oss-120b`).
+  - **Google Gemini Cloud**: OpenAI-compatible endpoint `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`. Supports native JSON mode with `gemini-2.5-flash` and `gemini-3.5-flash`.
+  - **OpenRouter Cloud**: Endpoint `https://openrouter.ai/api/v1/chat/completions`. Requires `HTTP-Referer` and `X-Title` headers. Supports `deepseek/deepseek-chat` and `meta-llama/llama-3.3-70b-instruct`.
+- **Cross-Cloud Quota Isolation**:
+  - Group models into independent provider pools. If Groq hits 429 TPM ceilings, seamlessly fail over to Google Gemini or OpenRouter without stalling client generation.
+
+## 11. Large Document Chunking & 25x Generation Acceleration
+- **24,000-Character Chunks**: Ingest long documents using 24k chunks with 1,500-char overlap, cutting LLM passes by >50%.
+- **Calibrated Max Tokens**: Set `max_tokens=2000` to prevent rate limiter over-reservation against 8,000-30,000 TPM caps.
+- **Concurrent Dispatch with 1:1 Model Bucket Assignment**:
+  - Dispatch chunks via `asyncio.gather` bounded by a semaphore of 3 and 200ms stagger.
+  - Assign each chunk to a distinct model family (`openai/gpt-oss-20b`, `gemini-2.5-flash`, `deepseek/deepseek-chat`, `qwen/qwen3.8-27b`), eliminating rate-limit queueing.
+
+## 12. OCR Mathematical Syntax Healing & Delimiter Auto-Wrapping
+- **Zero-Width Character Sanitization**: Always strip invisible zero-width spaces (`[\u200b\u200c\u200d\ufeff]`) prior to regex processing.
+- **Unicode Symbol Normalization**: Normalize `∗` (U+2217) $\to$ `*` and `−` (U+2212) $\to$ `-` before markdown parsing.
+- **Corrupted Macro Healing**: Auto-heal `≤ft(` $\to$ `\left(` before replacing `≤` with `\le`.
+- **Vertical Fraction Reconstruction**: Reassemble vertical OCR fractions inside parentheses `(\n numerator\n denominator\n)` $\to$ `\left(\frac{numerator}{denominator}\right)`.
+- **Logarithm Quotient Ordering**: Verify that logarithmic difference expressions $\log_a x - \log_a y$ map to $\frac{x}{y}$, automatically inverting upside-down OCR fractions.
+- **Mandatory Formula Delimiters**: Wrap block Governing Identities in `$$ ... $$` and inline worked exam steps in `$ ... $`.
