@@ -41,14 +41,67 @@ def get_supabase_headers():
 
 # Password hashing and SMTP configurations removed as authentication is migrated to Supabase Auth.
 
+def get_tesseract_cmd() -> Optional[str]:
+    """
+    Locates the Tesseract binary on the host system (Linux / macOS / Windows / Docker)
+    and configures pytesseract.tesseract_cmd and TESSDATA_PREFIX.
+    """
+    import shutil
+    import pytesseract
+
+    env_cmd = os.environ.get("TESSERACT_CMD")
+    if env_cmd and os.path.exists(env_cmd) and os.access(env_cmd, os.X_OK):
+        pytesseract.pytesseract.tesseract_cmd = env_cmd
+        return env_cmd
+
+    path_cmd = shutil.which("tesseract")
+    if path_cmd:
+        pytesseract.pytesseract.tesseract_cmd = path_cmd
+        return path_cmd
+
+    # Search standard system and container binary directories
+    candidates = [
+        "/usr/bin/tesseract",
+        "/usr/local/bin/tesseract",
+        "/opt/homebrew/bin/tesseract",
+        "/usr/bin/tesseract-ocr",
+        "/app/bin/tesseract",
+        os.path.expanduser("~/.local/bin/tesseract"),
+        "/var/lib/tesseract/bin/tesseract",
+    ]
+    for c in candidates:
+        if os.path.exists(c) and os.access(c, os.X_OK):
+            pytesseract.pytesseract.tesseract_cmd = c
+            return c
+
+    # Search standard tessdata paths if TESSDATA_PREFIX is not set
+    if "TESSDATA_PREFIX" not in os.environ:
+        tessdata_candidates = [
+            "/usr/share/tesseract-ocr/5/tessdata",
+            "/usr/share/tesseract-ocr/4.00/tessdata",
+            "/usr/share/tessdata",
+            "/usr/local/share/tessdata",
+            "/opt/homebrew/share/tessdata",
+        ]
+        for td in tessdata_candidates:
+            if os.path.isdir(td) and os.path.exists(os.path.join(td, "eng.traineddata")):
+                os.environ["TESSDATA_PREFIX"] = td
+                break
+
+    return None
+
 # Module-level worker function for parallel OCR processing
 def ocr_image_bytes(img_data: bytes) -> str:
     import pytesseract
     from PIL import Image
     import io
     try:
+        tess_bin = get_tesseract_cmd()
+        if tess_bin:
+            pytesseract.pytesseract.tesseract_cmd = tess_bin
         image = Image.open(io.BytesIO(img_data))
-        return pytesseract.image_to_string(image)
+        text = pytesseract.image_to_string(image, lang="eng", config="--psm 3")
+        return text.strip()
     except Exception as e:
         return f"[OCR Error: {str(e)}]"
 
@@ -1141,8 +1194,11 @@ Output ONLY a single valid JSON object strictly matching this schema:
 
 @app.get("/api/health")
 def health_check():
+    tess_cmd = get_tesseract_cmd()
     return {
         "status": "ok",
+        "tesseract_available": bool(tess_cmd),
+        "tesseract_path": tess_cmd or "not found",
         "groq_configured": bool(os.environ.get("GROQ_API_KEY")),
         "gemini_configured": bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")),
         "openrouter_configured": bool(os.environ.get("OPENROUTER_API_KEY"))
@@ -1320,22 +1376,42 @@ async def upload_pdf(file: UploadFile = File(...)):
                 page_images.append(pix.tobytes("png"))
 
                 
-            # Process Tesseract OCR in parallel using available CPU cores
+            # Validate Tesseract installation on host
+            tess_cmd = get_tesseract_cmd()
+            if not tess_cmd:
+                logger.error("Tesseract OCR binary not found on host system! Searched PATH, /usr/bin, /usr/local/bin, /opt/homebrew/bin, /app/bin, etc.")
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "Tesseract OCR is not installed or not found on the server host system. "
+                        "Please ensure 'tesseract-ocr' and 'tesseract-ocr-eng' are installed in the production environment."
+                    )
+                )
+
+            # Process Tesseract OCR in parallel using ThreadPoolExecutor
+            # Tesseract runs as an external subprocess via pytesseract releasing the Python GIL,
+            # avoiding Linux multiprocessing fork restrictions and IPC memory serialization failures.
             cpu_count = os.cpu_count() or 4
-            workers = min(len(doc), cpu_count)
-            logger.info(f"Spawning {workers} parallel processes for Tesseract OCR...")
+            workers = min(len(doc), cpu_count, 8)
+            logger.info(f"Executing Tesseract OCR on {len(page_images)} page(s) using {workers} worker(s) (Binary: {tess_cmd})...")
             
-            with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
                 results = list(executor.map(ocr_image_bytes, page_images))
                 
+            ocr_errors = [text for text in results if text and text.startswith("[OCR Error:")]
+            if ocr_errors:
+                for err in ocr_errors:
+                    logger.error(f"Tesseract OCR page failure: {err}")
+
             full_text = [text for text in results if text and not text.startswith("[OCR Error:")]
                     
         extracted_text = "\n".join(full_text)
         
         if not extracted_text.strip():
+            err_msg = f" OCR encountered errors: {ocr_errors[0]}." if 'ocr_errors' in locals() and ocr_errors else ""
             raise HTTPException(
                 status_code=400, 
-                detail="Could not extract any text from the PDF, even with OCR. The document might be blank or unreadable."
+                detail=f"Could not extract any text from the PDF, even with OCR.{err_msg} The document might be blank or unreadable."
             )
             
         cleaned_text = clean_extracted_text(extracted_text)

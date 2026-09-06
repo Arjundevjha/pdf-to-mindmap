@@ -2,17 +2,33 @@
 
 ## Executive Summary
 
-1. **Tri-Provider Cloud Architecture (Groq + Google Gemini + OpenRouter)**:
+1. **Production Tesseract OCR & Text Scanning Architecture**:
+   - **Root Cause Analysis (`513a6019b4114e34a2a9f88c292343e6.pdf`)**:
+     - The document is a pure scanned image containing **0 digital text characters**.
+     - In local macOS, Tesseract 5.5.1 was pre-installed at `/usr/local/bin/tesseract` via Homebrew, successfully extracting 643 characters.
+     - In production Linux (Render/PaaS), `pip install pytesseract` in `requirements.txt` installed only the Python wrapper, not the underlying C++ binary (`/usr/bin/tesseract`) or English traineddata (`eng.traineddata`).
+     - `build.sh` did not install system packages, causing `pytesseract` to throw `TesseractNotFoundError`, which was swallowed into `[OCR Error: ...]` and silently dropped, resulting in a 400 Bad Request error.
+   - **System Package Provisioning**:
+     - **[`build.sh`](file:///Users/abc/Desktop/pdf-to-mindmap/build.sh)**: Added automated `apt-get update && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng libtesseract-dev` for Render / Debian / Ubuntu.
+     - **[`Aptfile`](file:///Users/abc/Desktop/pdf-to-mindmap/Aptfile)**: Created root `Aptfile` listing `tesseract-ocr`, `tesseract-ocr-eng`, and `libtesseract-dev` for buildpack-based PaaS deployments.
+     - **[`Dockerfile`](file:///Users/abc/Desktop/pdf-to-mindmap/Dockerfile)**: Created production multi-stage Dockerfile baking in Python 3.11, Tesseract OCR, English data, and the built React frontend.
+   - **Backend OCR Engine Hardening ([`backend/main.py`](file:///Users/abc/Desktop/pdf-to-mindmap/backend/main.py))**:
+     - **Multi-Path Binary Discovery (`get_tesseract_cmd`)**: Resolves `TESSERACT_CMD`, `shutil.which`, `/usr/bin/tesseract`, `/usr/local/bin/tesseract`, `/opt/homebrew/bin/tesseract`, `/app/bin/tesseract`, and `~/.local/bin/tesseract`.
+     - **Tessdata Directory Auto-Configuration**: Auto-detects `tessdata` paths (`/usr/share/tesseract-ocr/5/tessdata`, `/usr/share/tessdata`) and sets `TESSDATA_PREFIX`.
+     - **ThreadPoolExecutor Migration**: Replaced `ProcessPoolExecutor` with `ThreadPoolExecutor`. Because Tesseract runs as an external subprocess releasing the Python GIL, threads avoid multiprocessing fork restrictions, memory bloat, and IPC serialization failures in cloud containers.
+     - **Actionable Diagnostic Logging**: If OCR fails or errors, logs the exact failure with `logger.error` and returns clear diagnostic detail in HTTP responses.
+     - **Health Endpoint**: `/api/health` now reports `"tesseract_available": true/false` and `"tesseract_path": str`.
+
+2. **Tri-Provider Cloud Architecture (Groq + Google Gemini + OpenRouter)**:
    - **Unified Multi-Cloud Routing**: Added full integration for **OpenRouter** alongside **Google Gemini** and **Groq Cloud**.
    - **Supported Model Families**:
      - **Groq Cloud**: `openai/gpt-oss-20b` (Ultra-Fast ~580 tok/s), `openai/gpt-oss-120b` (Flagship 128k context), `qwen/qwen3.8-27b`, `qwen/qwen3.6-27b`.
      - **Google Gemini Cloud**: `gemini-2.5-flash` (High Speed, native JSON mode), `gemini-3.5-flash` (Advanced reasoning).
      - **OpenRouter Cloud**: `deepseek/deepseek-chat` (DeepSeek V3, 128k context), `meta-llama/llama-3.3-70b-instruct`.
    - **Independent Rate-Limit Pool & Auto-Failover**: The backend dynamically balances across all configured providers. If any single provider encounters a 429 quota exhaustion or transient outage, requests instantly fail over across provider boundaries.
-   - **Health Endpoint**: `/api/health` reports status for all three clouds (`groq_configured`, `gemini_configured`, `openrouter_configured`).
-   - **Frontend Dropdown & Friendly Badges**: Updated model selection in [`frontend/src/App.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/App.tsx) and [`frontend/src/components/UploadZone.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/components/UploadZone.tsx) with organized groups for Google Gemini, OpenRouter, and Groq suites.
+   - **Frontend Dropdown & Friendly Badges**: Updated model selection in [`frontend/src/App.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/App.tsx) and [`frontend/src/components/UploadZone.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/components/UploadZone.tsx).
 
-2. **Comprehensive Mathematical Syntax Repair & KaTeX Auto-Healing**:
+3. **Comprehensive Mathematical Syntax Repair & KaTeX Auto-Healing**:
    - **Zero-Width Character Sanitization**: Strips invisible OCR artifacts (`\u200b`, `\u200c`, `\u200d`, `\ufeff`) that previously broke regex match boundaries.
    - **Unicode Symbol & Bullet Normalization**: Normalizes unicode minus `−` (U+2212) $\to$ `-`, unicode asterisk `∗` (U+2217) $\to$ `*`, preventing broken markdown bullet headers like `−∗∗GoverningIdentity∗∗:`.
    - **Corrupted Sizing Macro Healing (`≤ft` $\to$ `\left`)**: Automatically repairs `≤ft(` and `\?≤ft` into standard LaTeX `\left(` prior to any inequality replacements.
@@ -24,31 +40,21 @@
      - Automatically wraps inline equations in `Problem Walkthrough` steps in `$ ... $`.
    - **Dual-Layer Defense**: Implemented identically across backend Python (`repair_math_syntax_backend`) and frontend TypeScript AST pipeline (`prepareMathInput` in [`MathRenderer.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/components/MathRenderer.tsx)).
 
-3. **Curriculum System Prompt Reinforcements**:
-   - Explicitly prohibited corrupted OCR tokens (`≤ft`) and unparenthesized fractions in `get_system_prompt("math")`.
-   - Mandated canonical formatting for Governing Identities and worked problem walkthroughs.
-
-4. **Strict Local Git Preservation ("Only Commit Don't Push")**:
-   - All commits remain strictly local on branch `master`. No remote `git push` operations executed.
-
 ## Active State of Codebase Files
-- [`backend/main.py`](file:///Users/abc/Desktop/pdf-to-mindmap/backend/main.py): Tri-provider router (Groq, Gemini, OpenRouter), math repair heuristic pipeline, reinforced math curriculum prompt, `/api/health` configuration reporting.
-- [`frontend/src/components/MathRenderer.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/components/MathRenderer.tsx): AST Math & Markdown renderer with zero-width character stripping, `≤ft` healing, vertical fraction reconstruction, and delimiter wrapping.
-- [`frontend/src/App.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/App.tsx): Added OpenRouter suite to `validModels` and grouped model dropdown.
-- [`frontend/src/components/UploadZone.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/components/UploadZone.tsx): Added friendly display names for DeepSeek V3 and Llama 3.3 70B OpenRouter models.
-- [`handoff.md`](file:///Users/abc/Desktop/pdf-to-mindmap/handoff.md): Fully updated context and state documentation.
+- [`build.sh`](file:///Users/abc/Desktop/pdf-to-mindmap/build.sh): Automated `apt-get` installation for `tesseract-ocr`, `tesseract-ocr-eng`, and `libtesseract-dev`.
+- [`Aptfile`](file:///Users/abc/Desktop/pdf-to-mindmap/Aptfile): System package list for cloud buildpacks.
+- [`Dockerfile`](file:///Users/abc/Desktop/pdf-to-mindmap/Dockerfile): Multi-stage container definition with Tesseract OCR, Node.js frontend builder, and Python 3.11 backend.
+- [`backend/main.py`](file:///Users/abc/Desktop/pdf-to-mindmap/backend/main.py): Multi-path Tesseract discovery, ThreadPoolExecutor OCR engine, diagnostic error logger, `/api/health` status reporting, tri-provider router.
+- [`frontend/src/components/MathRenderer.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/components/MathRenderer.tsx): KaTeX AST renderer with delimiter auto-healing.
+- [`frontend/src/App.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/App.tsx): Multi-cloud model selection UI.
+- [`frontend/src/components/UploadZone.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/components/UploadZone.tsx): Model friendly names and multi-cloud badges.
+- [`handoff.md`](file:///Users/abc/Desktop/pdf-to-mindmap/handoff.md): Comprehensive documentation.
 
 ## Verification & Benchmarks
-- **OpenRouter Live Test**: `deepseek/deepseek-chat` generated complete mindmap in 19.22s with status 200 OK.
-- **Google Gemini Live Test**: `gemini-2.5-flash` generated complete 5-chapter mindmap with status 200 OK.
-- **Groq Live Test**: `openai/gpt-oss-20b` generated complete mindmap in 2.98s with status 200 OK.
-- **Math Repair Unit Verification**: Verified on user's exact corrupted string:
-  - `−∗∗GoverningIdentity∗∗:\log_a (xy) = \log_a x + \log_a y` $\to$ `- **Governing Identity**: $$\log_a (xy) = \log_a x + \log_a y$$`
-  - `Governing Identity: \log_a ≤ft( \n y\n x\n ​ \right) = \log_a x - \log_a y` $\to$ `- **Governing Identity**: $$\log_{a} \left(\frac{x}{y}\right) = \log_{a} x - \log_{a} y$$`
-  - `Problem Walkthrough: Expand log \n 5 \n ​ ( \n 5 \n 25 \n ​ )=log \n 5 \n ​ 25−log \n 5 \n ​ 5=2−1=1.` $\to$ `- **Problem Walkthrough**: Expand $\log_{5} \left(\frac{25}{5}\right) = \log_{5} 25 - \log_{5} 5=2-1=1$.`
+- **Live Scanned PDF Test (`513a6019b4114e34a2a9f88c292343e6.pdf`)**: Successfully processed via `/api/upload-pdf`, extracted **641 characters** (`Chapter 6: Exponential & Logarithmic Functions...`) with `ocr_processed: true` in 0.59s.
+- **Health Check (`/api/health`)**:
+  ```json
+  {"status":"ok","tesseract_available":true,"tesseract_path":"/usr/local/bin/tesseract","groq_configured":true,"gemini_configured":true,"openrouter_configured":true}
+  ```
 - **Backend Compilation**: `python3 -m py_compile backend/main.py` passed with 0 errors.
 - **Frontend Production Build**: `npm run build` in `frontend/` completed with 0 errors.
-- **API Health**: `{"status":"ok","groq_configured":true,"gemini_configured":true,"openrouter_configured":true}`.
-
-## Immediate Next Steps
-- Production environment is live and fully operational on [http://localhost:5173](http://localhost:5173) with FastAPI on port 8000.
