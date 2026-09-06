@@ -17,6 +17,7 @@ backend/server.log
 backend/venv/
 backend/__pycache__/
 backend/*.pyc
+backend/bin/
 backend/.env
 backend/.env.*
 

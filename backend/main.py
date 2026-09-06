@@ -41,54 +41,33 @@ def get_supabase_headers():
 
 # Password hashing and SMTP configurations removed as authentication is migrated to Supabase Auth.
 
-def get_tesseract_cmd() -> Optional[str]:
-    """
-    Locates the Tesseract binary on the host system (Linux / macOS / Windows / Docker)
-    and configures pytesseract.tesseract_cmd and TESSDATA_PREFIX.
-    """
-    import shutil
-    import pytesseract
+try:
+    from setup_tesseract import (
+        get_tesseract_cmd,
+        ensure_tesseract_installed,
+        configure_tessdata_prefix,
+    )
+except ImportError:
+    try:
+        from backend.setup_tesseract import (
+            get_tesseract_cmd,
+            ensure_tesseract_installed,
+            configure_tessdata_prefix,
+        )
+    except ImportError:
+        def get_tesseract_cmd() -> Optional[str]:
+            import shutil
+            return shutil.which("tesseract")
+        def ensure_tesseract_installed() -> bool:
+            return bool(get_tesseract_cmd())
+        def configure_tessdata_prefix() -> Optional[str]:
+            return None
 
-    env_cmd = os.environ.get("TESSERACT_CMD")
-    if env_cmd and os.path.exists(env_cmd) and os.access(env_cmd, os.X_OK):
-        pytesseract.pytesseract.tesseract_cmd = env_cmd
-        return env_cmd
-
-    path_cmd = shutil.which("tesseract")
-    if path_cmd:
-        pytesseract.pytesseract.tesseract_cmd = path_cmd
-        return path_cmd
-
-    # Search standard system and container binary directories
-    candidates = [
-        "/usr/bin/tesseract",
-        "/usr/local/bin/tesseract",
-        "/opt/homebrew/bin/tesseract",
-        "/usr/bin/tesseract-ocr",
-        "/app/bin/tesseract",
-        os.path.expanduser("~/.local/bin/tesseract"),
-        "/var/lib/tesseract/bin/tesseract",
-    ]
-    for c in candidates:
-        if os.path.exists(c) and os.access(c, os.X_OK):
-            pytesseract.pytesseract.tesseract_cmd = c
-            return c
-
-    # Search standard tessdata paths if TESSDATA_PREFIX is not set
-    if "TESSDATA_PREFIX" not in os.environ:
-        tessdata_candidates = [
-            "/usr/share/tesseract-ocr/5/tessdata",
-            "/usr/share/tesseract-ocr/4.00/tessdata",
-            "/usr/share/tessdata",
-            "/usr/local/share/tessdata",
-            "/opt/homebrew/share/tessdata",
-        ]
-        for td in tessdata_candidates:
-            if os.path.isdir(td) and os.path.exists(os.path.join(td, "eng.traineddata")):
-                os.environ["TESSDATA_PREFIX"] = td
-                break
-
-    return None
+# Auto-provision or verify Tesseract OCR engine on module load
+try:
+    ensure_tesseract_installed()
+except Exception as _tess_err:
+    logging.getLogger("pdf-to-mindmap-backend").warning(f"Initial Tesseract check returned: {_tess_err}")
 
 # Module-level worker function for parallel OCR processing
 def ocr_image_bytes(img_data: bytes) -> str:
@@ -97,6 +76,9 @@ def ocr_image_bytes(img_data: bytes) -> str:
     import io
     try:
         tess_bin = get_tesseract_cmd()
+        if not tess_bin:
+            ensure_tesseract_installed()
+            tess_bin = get_tesseract_cmd()
         if tess_bin:
             pytesseract.pytesseract.tesseract_cmd = tess_bin
         image = Image.open(io.BytesIO(img_data))
@@ -1195,6 +1177,12 @@ Output ONLY a single valid JSON object strictly matching this schema:
 @app.get("/api/health")
 def health_check():
     tess_cmd = get_tesseract_cmd()
+    if not tess_cmd:
+        try:
+            ensure_tesseract_installed()
+            tess_cmd = get_tesseract_cmd()
+        except Exception:
+            pass
     return {
         "status": "ok",
         "tesseract_available": bool(tess_cmd),
