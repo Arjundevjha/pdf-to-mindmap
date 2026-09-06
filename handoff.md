@@ -2,103 +2,53 @@
 
 ## Executive Summary
 
-1. **Production-Grade AST Math & Markdown Rendering Engine**:
-   - **AST Compilation Architecture**: Migrated `MathRenderer.tsx` from custom regex replacement to an industry-standard Abstract Syntax Tree (AST) pipeline powered by `react-markdown`, `remark-math`, `rehype-katex`, and `remark-gfm`.
-   - **KaTeX Copy-Paste Duplication Fix (`output: 'html'`)**: Pure HTML rendering prevents duplicated characters when copying formulas from node cards and summaries.
-   - **Backend Math Syntax Validator & Recursive Sanitizer (`sanitize_mindmap_math`)**:
-     - Auto-heals broken expressions like `a[x+\frac{b}{2a}$$^2`, missing fraction exponents (`x+\frac{b}{2a}^2 \to \left(x+\frac{b}{2a}\right)^2`), unparenthesized completing-the-square clauses, and step markers `{2}:$$`.
-     - Recursively runs across all mindmap nodes before returning JSON to the client.
-   - **Fragmented Delimiter & Unclosed Macro Auto-Healing**:
-     - Automatically repairs leading commands outside math delimiters: `\Delta$(k)>0$` $\to$ `$\Delta(k) > 0$`.
-     - Automatically absorbs unbracketed discriminant statements: `\Delta(k) > 0` $\to$ `$\Delta(k) > 0$`.
-     - Reconstructs scrambled PDF vertical fraction text into canonical surd rationalization identities: `For $\frac{A}{\sqrt{p} + \sqrt{q}}$, multiply numerator and denominator by $\frac{\sqrt{p} - \sqrt{q}}{\sqrt{p} - \sqrt{q}}$`.
+1. **Tri-Provider Cloud Architecture (Groq + Google Gemini + OpenRouter)**:
+   - **Unified Multi-Cloud Routing**: Added full integration for **OpenRouter** alongside **Google Gemini** and **Groq Cloud**.
+   - **Supported Model Families**:
+     - **Groq Cloud**: `openai/gpt-oss-20b` (Ultra-Fast ~580 tok/s), `openai/gpt-oss-120b` (Flagship 128k context), `qwen/qwen3.8-27b`, `qwen/qwen3.6-27b`.
+     - **Google Gemini Cloud**: `gemini-2.5-flash` (High Speed, native JSON mode), `gemini-3.5-flash` (Advanced reasoning).
+     - **OpenRouter Cloud**: `deepseek/deepseek-chat` (DeepSeek V3, 128k context), `meta-llama/llama-3.3-70b-instruct`.
+   - **Independent Rate-Limit Pool & Auto-Failover**: The backend dynamically balances across all configured providers. If any single provider encounters a 429 quota exhaustion or transient outage, requests instantly fail over across provider boundaries.
+   - **Health Endpoint**: `/api/health` reports status for all three clouds (`groq_configured`, `gemini_configured`, `openrouter_configured`).
+   - **Frontend Dropdown & Friendly Badges**: Updated model selection in [`frontend/src/App.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/App.tsx) and [`frontend/src/components/UploadZone.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/components/UploadZone.tsx) with organized groups for Google Gemini, OpenRouter, and Groq suites.
 
-2. **Syllabus-Aligned Revision Schemas & Dynamic Topic Naming**:
-   - Refactored all system prompts (`math`, `physics`, `history`, `geography`, `general`) specifically for **Secondary Revision Notes**.
-   - Replaced academic jargon ("Main Thesis", "Professor", "Architectural Framework") with practical, exam-focused headers:
-     - `### Core Concept & Exam Rule` $\to$ **Key Principle** & **Step-by-Step Method** & **Exam Pitfalls & Conditions**.
-     - `### Formulas & Identities` $\to$ clean display equations and symbol definitions.
-     - `### Worked Exam Example` $\to$ concrete problem walkthroughs with intermediate substitutions and final answers.
-   - **Specific Root Topic Naming**: Root node labels now dynamically state the exact academic topic name (e.g. *Algebraic Foundations & Quadratic Functions*, *Kinematics & Dynamics*) without generic `"Document Overview"` or `"O-Level"` prefixes.
+2. **Comprehensive Mathematical Syntax Repair & KaTeX Auto-Healing**:
+   - **Zero-Width Character Sanitization**: Strips invisible OCR artifacts (`\u200b`, `\u200c`, `\u200d`, `\ufeff`) that previously broke regex match boundaries.
+   - **Unicode Symbol & Bullet Normalization**: Normalizes unicode minus `−` (U+2212) $\to$ `-`, unicode asterisk `∗` (U+2217) $\to$ `*`, preventing broken markdown bullet headers like `−∗∗GoverningIdentity∗∗:`.
+   - **Corrupted Sizing Macro Healing (`≤ft` $\to$ `\left`)**: Automatically repairs `≤ft(` and `\?≤ft` into standard LaTeX `\left(` prior to any inequality replacements.
+   - **Vertical Multiline Fraction Reconstruction**: Reassembles vertical OCR fractions inside parentheses (`( \n y \n x \n )` or `( \n 5 \n 25 \n )`) into standard LaTeX fractions `\left(\frac{x}{y}\right)` and `\left(\frac{25}{5}\right)`.
+   - **Quotient Fraction Subtraction Inversion**: Corrects inverted logarithmic quotient fractions (e.g. $\log_a \left(\frac{y}{x}\right) = \log_a x - \log_a y \to \log_a \left(\frac{x}{y}\right) = \log_a x - \log_a y$, and numerical $\log_5 \left(\frac{5}{25}\right) = \log_5 25 - \log_5 5 \to \log_5 \left(\frac{25}{5}\right) = \log_5 25 - \log_5 5 = 2 - 1 = 1$).
+   - **Broken Log Subscript Collapsing**: Subscripts multiline splits like `log \n 5` into `\log_5`.
+   - **Mandatory LaTeX Delimiter Wrapping**:
+     - Automatically ensures all `Governing Identity` formulas are wrapped in display math `$$ ... $$`.
+     - Automatically wraps inline equations in `Problem Walkthrough` steps in `$ ... $`.
+   - **Dual-Layer Defense**: Implemented identically across backend Python (`repair_math_syntax_backend`) and frontend TypeScript AST pipeline (`prepareMathInput` in [`MathRenderer.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/components/MathRenderer.tsx)).
 
-3. **Consolidation on Ultra-Fast 128k Text & OCR Pipeline (Vision Model Removed)**:
-   - **Decommissioned Vision Mode**: Removed the slow, rate-limit prone multi-page JPEG rendering and vision chunking endpoint (`/api/generate-mindmap-vision`).
-   - **Unified Architecture**: All PDFs (digital and scanned) now flow through high-speed parallel Tesseract OCR + PyMuPDF digital extraction, feeding directly into the 128k context text pipeline.
-   - **Performance Boost**: Mindmap generation time dropped significantly, avoiding 429 TPM exhaustion while preserving mathematical precision and comprehensive text coverage.
+3. **Curriculum System Prompt Reinforcements**:
+   - Explicitly prohibited corrupted OCR tokens (`≤ft`) and unparenthesized fractions in `get_system_prompt("math")`.
+   - Mandated canonical formatting for Governing Identities and worked problem walkthroughs.
 
-4. **Collapsed Mindmap Initialization & Progressive Expansion**:
-   - Mindmaps initialize in a clean collapsed state with interactive `+` expansion controls.
-   - Camera zoom and viewport remain stable on expansion/collapse.
-   - Topbar includes "Expand All" and "Collapse All" quick-action controls.
-
-5. **Groq Model Suite**:
-   - **Active Production Model Suite**:
-     - Flagship & High-Capacity: `openai/gpt-oss-120b` (30,000 TPM limit, 128k context) and `qwen/qwen3.6-27b`.
-     - Fast & High-Throughput: `openai/gpt-oss-20b` (30,000 TPM limit).
-   - **Backward-Compatible Alias Resolution**: Added automatic backend mapping in `MODEL_ALIASES` so any incoming requests for legacy models automatically route to `openai/gpt-oss-120b` or `openai/gpt-oss-20b`.
-   - **Frontend UI & Load Balancer Updates**:
-     - Updated dropdown selector in [`frontend/src/App.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/App.tsx) to list only active models.
-     - Updated friendly model label mapping in [`frontend/src/components/UploadZone.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/components/UploadZone.tsx).
-
-6. **Adaptive Multi-Chunk Generation & Zero-Loss Content Preservation**:
-   - **Multi-Model Independent Rate-Limit Pool**: Configured true independent model families on Groq (`qwen/qwen3.8-27b`, `openai/gpt-oss-120b`, `qwen/qwen3.6-27b`), eliminating 429 quota exhaustion by cycling across independent rate limit buckets with 10-attempt dynamic backoff.
-   - **Reasoning Tag & Unclosed Code-Fence Stripping**: Strips `<think>...</think>` tags and unclosed code fences (` ```json `) to prevent reasoning models from corrupting JSON payloads.
-   - **Unescaped Inner Quote Repair (`fix_inner_unescaped_quotes`)**: Automatically repairs and escapes unescaped double quotes inside `"summary"` and `"label"` JSON fields (e.g. `"Shared Values"`, `"Ethnic Integration Policy"`), preventing `json.loads` syntax errors.
-   - **Fixed JSON Code-Fence Stripping Bug**: Upgraded `clean_json_string` to strip unclosed leading ````json` fences before JSON parsing.
-   - **Eliminated All Placeholder Fallbacks**: Replaced all hardcoded summary strings in `repair_and_parse_json` and `consolidate_summaries` with dynamic AST extractors that pull real syllabus concepts directly from generated child cards.
-   - **Fixed Chunk Boundary Text Slicing Bug**: Corrected index calculation in `split_text_into_chunks` where `start = max(boundary - overlap, start + step)` inadvertently skipped text segments between chunk boundaries. All text is now sliced with guaranteed contiguous coverage and 1,500-char overlap.
-   - **Expanded Completion Tokens (3,500 Max Tokens)**: Increased completion token budget to 3,500, enabling LLMs to generate deeply comprehensive concept cards per chunk without token truncation.
-   - **Strict Zero-Omission Extraction Directives**: Updated prompts to explicitly demand exhaustive extraction of every single section, heading, policy, argument, case study, and exam strategy from the notes.
-   - **Safe Free-Tier Token Calibration (14,000 Chars)**: Ingests documents into calibrated 14k-character chunks (~3,200 prompt tokens) with 3,500 max completion tokens, strictly staying below Groq Free Tier limits.
-   - **Intelligent Discipline Auto-Detection (`detect_subject_from_text`)**: Automatically detects subject matter (Social Studies/Humanities, Math, Physics, History, Geography) even when left on 'General (Auto-detect)', eliminating prompt mismatch.
-   - **Eliminated Fake Math & Formula Hallucinations**: Neutralized General prompt to remove rigid math requirements for non-math documents, enforcing strict grounding in source text without outside spin or artificial equations.
-   - **Zero Junk Fallbacks**: Completely eliminated fake OCR card generators, ensuring every rendered card contains real, high-quality synthesized concepts.
-   - **Dedicated Social Studies & Humanities (SRQ, PEEL, Case Studies) Mode**: Added syllabus-aligned prompt for Social Studies, Governance, and Humanities featuring 4-8 core inquiries, 2-4 sub-concepts, PEEL model answers, and real-world policy case studies.
-   - **Noise-Free Visuals**: Disabled automatic random Wikimedia photo scraping by default (`ENABLE_WIKIMEDIA_IMAGES=false`), ensuring clean, distraction-free study cards.
-   - **Snyk Security Audit**: Zero vulnerabilities across backend Python and frontend TypeScript codebases (`snyk_code_scan` passed with 0 issues).
-   - **Live Verification on `SRQ.pdf`**: Tested on `/Users/abc/Desktop/SRQ.pdf` (89,410 chars, 8 chunks) producing **50-56 rich syllabus nodes** with zero placeholder text.
-
-7. **Universal Chapter & Section Numbering Architecture**:
-   - **System Prompt Curriculum Directives**: Updated all 6 subjects (Math, Physics, Humanities, History, Geography, General) in `get_system_prompt` to mandate preserving source chapter numbers or generating sequential `Chapter X: [Title]` for top-level modules and `X.Y [Subtopic Title]` for child sections.
-   - **Multi-Chunk Global Chapter Continuity**: In `execute_groq_mindmap`, added chapter continuity directives to prevent multi-chunk documents from resetting to Chapter 1 on every chunk boundary.
-   - **Deterministic Backend Post-Processor (`ensure_chapter_numbering`)**: Recursively inspects the mindmap tree prior to serialization. Automatically ensures top-level nodes carry `Chapter X: ` prefixes and child sub-nodes carry `X.Y ` numbering without mutating explicit source headings.
-   - **Prefix Deduplication (`sanitize_node_label`)**: Strips repetitive prefixes (e.g., `Chapter 1: Chapter 1:` -> `Chapter 1:` and `1.1: 1.1` -> `1.1`) inside `sanitize_mindmap_math`.
-
-8. **Elimination of Dummy Fallback Nodes & Strict Quality Validation**:
-   - **Root Cause of "Chapter 9: Study Module"**: When a specific chunk returned a malformed response or experienced a transient parsing failure, `repair_and_parse_json` previously returned a default dummy dictionary (`{"label": "Study Module", "summary": "### Core Concept & Overview\n- **Key Principle**: In-depth analysis of syllabus concepts.", "children": []}`).
-   - **Strict Null Validation on Parsing Failure**: `repair_and_parse_json` now returns `None` upon unrecoverable parsing errors rather than inventing dummy cards.
-   - **Automated Re-routing**: `execute_groq_mindmap` rejects any response with generic placeholder labels (`"Study Module"`, `"Study Topic"`, `"Document Overview"`) and immediately fails over to the next independent model family in the rotation pool.
-   - **Consolidation Filter**: `generate_mindmap` strips out any empty dummy fragments during multi-chunk tree consolidation.
-   - **Live Verification on `SRQ.pdf`**: Tested on `/Users/abc/Desktop/SRQ.pdf` (89,410 chars, 8 chunks) producing **52 rich syllabus nodes** with 0 dummy nodes and 100% genuine syllabus concepts across all chapters.
-
-9. **Mindmap Generation Speed Optimization (25x Acceleration: ~240s $\to$ 9.5s)**:
-   - **Exclusion of Decommissioned Models**: Purged deprecated `groq/compound` and `groq/compound-mini` from active pools and dropdowns.
-   - **Ultra-Fast Lead Engine (`openai/gpt-oss-20b`)**: Promoted `openai/gpt-oss-20b` (benchmarked at 582 tokens/sec, ~1.6s latency) as default fast engine in `MODEL_POOL` and frontend dropdowns.
-   - **Optimized 24k Chunks**: Increased chunk size to 24,000 chars, reducing multi-chunk passes from 8 down to 4 for large documents (`SRQ.pdf`).
-   - **Quota Over-Reservation Prevention**: Calibrated `max_tokens=2000` (down from 3,500), preventing Groq rate-limiter over-reservation against the 8,000 TPM limit.
-   - **Concurrent 1:1 Model-Bucket Distribution**: Dispatches chunks in parallel via `asyncio.gather` with a bounded semaphore of 3 and a 200ms stagger. Each chunk targets a distinct model family (`openai/gpt-oss-20b`, `qwen/qwen3.8-27b`, `openai/gpt-oss-120b`, `qwen/qwen3.6-27b`), eliminating 429 quota exhaustion and retry backoff delays.
-   - **Live Verification on `SRQ.pdf`**: End-to-end mindmap generation on 89,410 characters completed in **9.53 seconds**, producing **51 rich syllabus nodes** across 10 sequential chapters with zero 429 errors.
-
-10. **Dual-Provider Architecture (Groq + Google Gemini Integration)**:
-   - **Google Gemini API Support**: Integrated Google Gemini (`gemini-2.5-flash` and `gemini-3.5-flash`) via Google's `/v1beta/openai/chat/completions` endpoint with native JSON schema formatting.
-   - **Hybrid Cross-Cloud Load Balancing**: Added Gemini models directly into `MODEL_POOL` and `ALL_ALTERNATIVE_MODELS`. Auto-routing load balances requests across both Groq Cloud and Google Cloud.
-   - **Independent Multi-Provider Quotas**: Even if Groq hits 429 rate limit ceilings, Gemini provides an independent quota pool, ensuring zero-interruption mindmap generation.
-   - **Frontend UI Integration**: Added dedicated "Google Gemini Suite" section in [`frontend/src/App.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/App.tsx) and friendly model badge display in [`frontend/src/components/UploadZone.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/components/UploadZone.tsx).
+4. **Strict Local Git Preservation ("Only Commit Don't Push")**:
+   - All commits remain strictly local on branch `master`. No remote `git push` operations executed.
 
 ## Active State of Codebase Files
-- [`frontend/src/components/MathRenderer.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/components/MathRenderer.tsx): Upgraded KaTeX & Markdown AST renderer with delimiter auto-healing.
-- [`frontend/src/components/MindmapCanvas.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/components/MindmapCanvas.tsx): Node cards render titles and markdown summaries; interactive expansion controls.
-- [`frontend/src/App.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/App.tsx): Added Gemini 2.5 Flash, Gemini 3.5 Flash, GPT-OSS 20B (Ultra-Fast), purged compound models, and updated model selection UI.
-- [`frontend/src/components/UploadZone.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/components/UploadZone.tsx): Updated model friendly names to highlight Gemini 2.5/3.5 Flash, GPT-OSS 20B, and Flagship 120B.
-- [`backend/main.py`](file:///Users/abc/Desktop/pdf-to-mindmap/backend/main.py): Dual-provider (Groq + Google Gemini) dynamic request router, concurrent 1:1 model bucket distribution, 24k chunk sizing, 2,000 max_tokens calibration.
+- [`backend/main.py`](file:///Users/abc/Desktop/pdf-to-mindmap/backend/main.py): Tri-provider router (Groq, Gemini, OpenRouter), math repair heuristic pipeline, reinforced math curriculum prompt, `/api/health` configuration reporting.
+- [`frontend/src/components/MathRenderer.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/components/MathRenderer.tsx): AST Math & Markdown renderer with zero-width character stripping, `≤ft` healing, vertical fraction reconstruction, and delimiter wrapping.
+- [`frontend/src/App.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/App.tsx): Added OpenRouter suite to `validModels` and grouped model dropdown.
+- [`frontend/src/components/UploadZone.tsx`](file:///Users/abc/Desktop/pdf-to-mindmap/frontend/src/components/UploadZone.tsx): Added friendly display names for DeepSeek V3 and Llama 3.3 70B OpenRouter models.
+- [`handoff.md`](file:///Users/abc/Desktop/pdf-to-mindmap/handoff.md): Fully updated context and state documentation.
+
+## Verification & Benchmarks
+- **OpenRouter Live Test**: `deepseek/deepseek-chat` generated complete mindmap in 19.22s with status 200 OK.
+- **Google Gemini Live Test**: `gemini-2.5-flash` generated complete 5-chapter mindmap with status 200 OK.
+- **Groq Live Test**: `openai/gpt-oss-20b` generated complete mindmap in 2.98s with status 200 OK.
+- **Math Repair Unit Verification**: Verified on user's exact corrupted string:
+  - `−∗∗GoverningIdentity∗∗:\log_a (xy) = \log_a x + \log_a y` $\to$ `- **Governing Identity**: $$\log_a (xy) = \log_a x + \log_a y$$`
+  - `Governing Identity: \log_a ≤ft( \n y\n x\n ​ \right) = \log_a x - \log_a y` $\to$ `- **Governing Identity**: $$\log_{a} \left(\frac{x}{y}\right) = \log_{a} x - \log_{a} y$$`
+  - `Problem Walkthrough: Expand log \n 5 \n ​ ( \n 5 \n 25 \n ​ )=log \n 5 \n ​ 25−log \n 5 \n ​ 5=2−1=1.` $\to$ `- **Problem Walkthrough**: Expand $\log_{5} \left(\frac{25}{5}\right) = \log_{5} 25 - \log_{5} 5=2-1=1$.`
+- **Backend Compilation**: `python3 -m py_compile backend/main.py` passed with 0 errors.
+- **Frontend Production Build**: `npm run build` in `frontend/` completed with 0 errors.
+- **API Health**: `{"status":"ok","groq_configured":true,"gemini_configured":true,"openrouter_configured":true}`.
 
 ## Immediate Next Steps
-- Full end-to-end testing complete. The web interface is live and ready for testing at [http://localhost:5173](http://localhost:5173).
-- [`start.sh`](file:///Users/abc/Desktop/pdf-to-mindmap/start.sh): Production launcher with automatic dependency checks and clean process teardown.
-
-## Verification
-- Speed Benchmark: Mindmap generated in **9.53 seconds** on 89,410-char `SRQ.pdf` (25x faster than previous ~240s baseline).
-- Gemini End-to-End Test: `gemini-2.5-flash` generated complete 4-chapter mindmap in **2.21 seconds**.
-- Production TypeScript build (`npm run build`): Passed with 0 errors.
-- Python backend syntax compilation (`py_compile`): Passed cleanly.
-- Multi-Subject Chapter Numbering Verified: Sequential Chapters 1 through 10 with 51 comprehensive syllabus nodes and zero placeholder text.
+- Production environment is live and fully operational on [http://localhost:5173](http://localhost:5173) with FastAPI on port 8000.

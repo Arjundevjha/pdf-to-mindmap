@@ -7,6 +7,8 @@ const getSingleModelFriendlyName = (id: string) => {
   if (id.includes('gemini-2.5-flash')) return 'Gemini 2.5 Flash';
   if (id.includes('gemini-3.5-flash')) return 'Gemini 3.5 Flash';
   if (id.includes('gemini')) return 'Google Gemini';
+  if (id.includes('deepseek-chat') || id.includes('deepseek')) return 'DeepSeek V3 (OpenRouter)';
+  if (id.includes('llama-3.3-70b')) return 'Llama 3.3 70B (OpenRouter)';
   if (id.includes('gpt-oss-20b')) return 'GPT-OSS 20B (Ultra-Fast)';
   if (id.includes('gpt-oss-120b')) return 'GPT-OSS 120B (Flagship)';
   if (id.includes('qwen3.8-27b')) return 'Qwen 3.8 27B';

@@ -424,14 +424,23 @@ def repair_math_syntax_backend(text: str) -> str:
 
     s = text
 
-    # 1. Clean step prefixes like {2}:$$ -> \n- **Step 2**: $$
-    s = re.sub(r'(?:^|\n)\s*[\{\[\(](\d+)[\}\]\)]\s*:\s*', r'\n- **Step \1**: ', s)
+    # 0. Strip zero-width characters and invisible OCR artifacts
+    s = re.sub(r'[\u200b\u200c\u200d\ufeff]', '', s)
 
-    # 2. Normalize Unicode symbols to standard LaTeX
+    # 1. Normalize Unicode symbols & ASCII control characters
+    s = s.replace('∗', '*')
+    s = s.replace('−', '-')
+    s = s.replace('\x0c', '\\f').replace('\x08', '\\b').replace('\x0b', '\\v')
+    s = re.sub(r'\r(ight|ho|angle|oot|ightarrow|e)(?=[^a-zA-Z]|$)', r'\\r\1', s)
+    s = s.replace('\r\n', '\n').replace('\r', '\n')
     s = s.replace('±', r'\pm ')
     s = s.replace('×', r'\times ')
     s = s.replace('÷', r'\div ')
     s = s.replace('≠', r'\neq ')
+    
+    # 2. Fix corrupted \left where \le was converted to ≤: ≤ft -> \left
+    s = re.sub(r'\\?≤ft\b', r'\\left', s)
+    s = re.sub(r'≤ft\(', r'\\left(', s)
     s = s.replace('≤', r'\le ')
     s = s.replace('≥', r'\ge ')
     s = s.replace('≈', r'\approx ')
@@ -439,46 +448,127 @@ def repair_math_syntax_backend(text: str) -> str:
     s = s.replace('⇒', r' $\implies$ ')
     s = s.replace('²', '^2').replace('³', '^3')
 
-    # 3. Heal leading LaTeX command immediately outside inline math: e.g. \Delta$(k)>0$ -> $\Delta(k)>0$
+    # 3. Repair vertical multiline fractions inside parentheses (e.g. from vertical PDF extraction):
+    # \left( \n y \n x \n \right) or ( \n 5 \n 25 \n )
+    def fix_parens_fraction(m):
+        top = m.group(1).strip()
+        bot = m.group(2).strip()
+        return f'\\left(\\frac{{{top}}}{{{bot}}}\\right)'
+
+    s = re.sub(
+        r'(?:\\left\s*\(|\()\s*([a-zA-Z0-9_+*-]+)\s*\n+\s*([a-zA-Z0-9_+*-]+)\s*(?:\\right\s*\)|\))',
+        fix_parens_fraction,
+        s
+    )
+
+    # 4. Invert inverted quotient fractions if matched with subtraction (symbolic):
+    # \log_a \left(\frac{y}{x}\right) = \log_a x - \log_a y -> \frac{x}{y}
+    pat_sym = r"\\log_\{?([a-zA-Z0-9]+)\}?\s*\\left\(\\frac\{([a-zA-Z0-9]+)\}\{([a-zA-Z0-9]+)\}\\right\)\s*=\s*\\log_\{?(?:[a-zA-Z0-9]+)\}?\s*([a-zA-Z0-9]+)\s*-\s*\\log_\{?(?:[a-zA-Z0-9]+)\}?\s*([a-zA-Z0-9]+)"
+    s = re.sub(
+        pat_sym,
+        lambda m: f"\\log_{{{m.group(1)}}} \\left(\\frac{{{m.group(4)}}}{{{m.group(5)}}}\\right) = \\log_{{{m.group(1)}}} {m.group(4)} - \\log_{{{m.group(1)}}} {m.group(5)}",
+        s
+    )
+
+    # 5. Collapse broken multiline log subscripts: "log \n 5" -> "\log_5"
+    s = re.sub(r'(?<![\\a-zA-Z])\b(log|ln)\s*\n+\s*([0-9a-zA-Z]+)', r'\\\1_{\2}', s)
+    s = re.sub(r'=\s*\\?log_?\{?(\w+)\}?\s*\n+\s*(\w+)', r'= \\log_{\1} \2', s)
+    s = re.sub(r'-\s*\\?log_?\{?(\w+)\}?\s*\n+\s*(\w+)', r'- \\log_{\1} \2', s)
+    s = re.sub(r'(?<![\\a-zA-Z])\b(log|ln)\s+(\d+)\s+(\d+)\b', r'\\\1_{\2} \3', s)
+
+    # 6. Ensure math commands have backslashes outside math when followed by subscript, parens, or number
+    s = re.sub(r'(?<![a-zA-Z\\])\b(log|ln|sin|cos|tan|cot|sec|csc)\b(?=[_(\d]|\s+\d)', r'\\\1', s)
+
+    # 7. Clean multiline breaks between math tokens
+    s = re.sub(r'(\\log_[a-zA-Z0-9{}]+)\s*\n+\s*(\\left|\()', lambda m: f"{m.group(1)} {m.group(2)}", s)
+    s = re.sub(r'(\\right\)?|\))\s*\n*=\s*\n*', r'\1 = ', s)
+    s = re.sub(r'=\s*\n*(\\log_[a-zA-Z0-9{}]+)', r'= \1', s)
+    s = re.sub(r'-\s*\n*(\\log_[a-zA-Z0-9{}]+)', r'- \1', s)
+    s = re.sub(r'([0-9a-zA-Z])\s*-\s*(\\log_)', r'\1 - \2', s)
+
+    # 7b. Invert numerical inverted fractions now that log subscripts and operators are normalized:
+    # \log_5 \left(\frac{5}{25}\right) = \log_5 25 - \log_5 5 -> \frac{25}{5}
+    pat_num = r"\\log_\{?([a-zA-Z0-9]+)\}?\s*\\left\(\\frac\{(\d+)\}\{(\d+)\}\\right\)\s*=\s*\\log_\{?(?:[a-zA-Z0-9]+)\}?\s*(\d+)\s*-\s*\\log_\{?(?:[a-zA-Z0-9]+)\}?\s*(\d+)"
+    s = re.sub(
+        pat_num,
+        lambda m: f"\\log_{{{m.group(1)}}} \\left(\\frac{{{m.group(4)}}}{{{m.group(5)}}}\\right) = \\log_{{{m.group(1)}}} {m.group(4)} - \\log_{{{m.group(1)}}} {m.group(5)}",
+        s
+    )
+
+    # 8. Clean step prefixes like {2}:$$ -> \n- **Step 2**: $$
+    s = re.sub(r'(?:^|\n)\s*[\{\[\(](\d+)[\}\]\)]\s*:\s*', r'\n- **Step \1**: ', s)
+
+    # 9. Fix squeezed headers e.g. -**GoverningIdentity**: -> - **Governing Identity**:
+    s = re.sub(r'(\*{2})([A-Z][a-z]+)([A-Z][a-z]+)(\*{2})', r'\1\2 \3\4', s)
+    s = re.sub(r'^[−-]?\s*(\*\*[^*]+\*\*)\s*:\s*', r'- \1: ', s, flags=re.MULTILINE)
+    s = re.sub(r'^[−-]?\s*(?:\*\*)?(Governing Identity|Governing Formula|Problem Walkthrough|Calculation Walkthrough|Key Principle|Step-by-Step Method|Exam Pitfalls & Conditions)(?:\*\*)?\s*:\s*', r'- **\1**: ', s, flags=re.MULTILINE)
+
+    # 10. Heal leading LaTeX command immediately outside inline math: e.g. \Delta$(k)>0$ -> $\Delta(k)>0$
     s = re.sub(r'(\\[a-zA-Z]+)\s*\$([^$]+)\$', r'$\1 \2$', s)
     s = re.sub(r'\$(\\[a-zA-Z]+)\s+([(\[{])', r'$\1\2', s)
 
-    # 4. Heal standalone LaTeX command outside $ followed by operators or arguments:
-    # e.g. \Delta(k) > 0 -> $\Delta(k) > 0$, \Delta > 0 -> $\Delta > 0$
+    # 11. Heal standalone LaTeX command outside $ followed by operators or arguments:
     s = re.sub(r'(?<!\$|\\)(\\Delta|\\alpha|\\beta|\\gamma|\\theta|\\pi|\\sigma|\\lambda|\\mu|\\omega)(?:\(([a-zA-Z0-9_,+-]+)\))?\s*([><=≠≤≥≈])\s*([a-zA-Z0-9_+-]+|\\[a-zA-Z]+)(?!\$)',
                r'$\1\2 \3 \4$', s)
 
-    # 5. Heal trailing argument or operator outside closing $:
-    # e.g. $\Delta$(k)>0$ -> $\Delta(k)>0$, $\Delta$(k) -> $\Delta(k)$
+    # 12. Heal trailing argument or operator outside closing $:
     s = re.sub(r'\$([^$]+)\$\s*(\([a-zA-Z0-9_,+-]+\))(?!\$)', r'$\1\2$', s)
     s = re.sub(r'\$([^$]+)\$\s*([><=≠≤≥≈])\s*([a-zA-Z0-9_+-]+|\\[a-zA-Z]+)(?!\$)', r'$\1 \2 \3$', s)
 
-    # 6. Heal adjacent or split math blocks: e.g. $\Delta$$(k)>0$ -> $\Delta(k)>0$
+    # 13. Heal adjacent or split math blocks: e.g. $\Delta$$(k)>0$ -> $\Delta(k)>0$
     s = re.sub(r'\$([^$]+)\$\s*\$([^$]+)\$', r'$\1 \2$', s)
 
-    # 7. Repair stray mid-formula closing $$ before an exponent:
-    # e.g. "a[x+\frac{b}{2a}$$^2-\frac{b^2}{4a^2}\bigr]" -> "a\left[x+\frac{b}{2a}\right]^2-\frac{b^2}{4a^2}"
+    # 14. Repair stray mid-formula closing $$ before an exponent:
     s = re.sub(r'\\frac\{([^{}]+)\}\{([^{}]+)\}\$\$[\^](\d+|\{[^{}]+\})', r'\\frac{\1}{\2}\\bigr)^\3', s)
     s = re.sub(r'([a-zA-Z0-9)\]])\$\$[\^](\d+|\{[^{}]+\})', r'\1^\2', s)
 
-    # 8. Repair broken completing the square clauses: "a[x 2 + a/b x]" -> "a\left[x^2 + \frac{b}{a}x\right]"
+    # 15. Repair broken completing the square clauses: "a[x 2 + a/b x]" -> "a\left[x^2 + \frac{b}{a}x\right]"
     s = re.sub(r'a\[x\s*2\s*\+\s*([ab])\/([ab])\s*x\]', r'a\\left[x^2 + \\frac{b}{a}x\\right]', s)
     s = re.sub(r'ax\+\\frac\{b\}\{2a\}\s*\\bigr\)\^2', r'a\\left(x + \\frac{b}{2a}\\right)^2', s)
     s = re.sub(r'ax\+\\frac\{b\}\{2a\}\s*\^2', r'a\\left(x + \\frac{b}{2a}\\right)^2', s)
     s = re.sub(r'a\[x\+\\frac\{b\}\{2a\}\s*\\bigr\)\^2', r'a\\left[\\left(x + \\frac{b}{2a}\\right)^2', s)
 
-    # 9. Fix unparenthesized linear+fraction before exponent: x+\frac{b}{2a}^2 -> \left(x+\frac{b}{2a}\right)^2
+    # 16. Fix unparenthesized linear+fraction before exponent: x+\frac{b}{2a}^2 -> \left(x+\frac{b}{2a}\right)^2
     s = re.sub(r'((?:[a-zA-Z0-9]|\\[a-zA-Z]+)\s*[+-]\s*\\frac\{[^{}]*\}\{[^{}]*\})\s*\^(\d+|\{[^{}]*\})', r'\\left(\1\\right)^\2', s)
 
-    # 10. Repair truncated/unclosed fraction in conjugate rationalization:
+    # 17. Repair truncated/unclosed fraction in conjugate rationalization:
     s = re.sub(r'For\s+p\s*\+\s*q\s*A\s*,?\s*multiply\s+by\s*(?:\\frac\{)?(?:\\sqrt\{p\})?\$?',
                r'For $\\frac{A}{\\sqrt{p} + \\sqrt{q}}$, multiply numerator and denominator by $\\frac{\\sqrt{p} - \\sqrt{q}}{\\sqrt{p} - \\sqrt{q}}$',
                s, flags=re.IGNORECASE)
     s = re.sub(r'\\frac\{([^{}]+)\}\$', r'\\frac{\1}{\\sqrt{p} - \\sqrt{q}}$', s)
 
-    # 11. Repair sizing macros missing opening or closing parentheses
+    # 18. Repair sizing macros missing opening or closing parentheses
     s = re.sub(r'\\bigl([a-zA-Z0-9])', r'\\bigl(\1', s)
     s = re.sub(r'\\bigr(?=[^)\\]|$)', r'\\bigr)', s)
+
+    # 19. Wrap unwrapped Governing Identity formulas in $$ ... $$
+    def wrap_identity(m):
+        prefix = m.group(1)
+        formula = m.group(2).strip()
+        if not formula.startswith('$'):
+            formula = f'$${formula}$$'
+        return f'{prefix}{formula}'
+    s = re.sub(r'(- \*\*Governing (?:Identity|Formula)\*\*:\s*)([^\n$]+)', wrap_identity, s)
+
+    # 20. Wrap inline equations in Worked Exam Example walkthroughs if unwrapped:
+    def wrap_walkthrough(m):
+        prefix = m.group(1)
+        content = m.group(2).strip()
+        if '=' in content and '$' not in content:
+            lead_match = re.match(r'^(.*?(?:Expand|Evaluate|Solve|Simplify|Calculate|For)\s+)(.+)$', content, re.IGNORECASE)
+            if lead_match:
+                lead = lead_match.group(1)
+                eq = lead_match.group(2).rstrip('.')
+                dot = '.' if content.endswith('.') else ''
+                return f'{prefix}{lead}${eq}${dot}'
+            else:
+                return f'{prefix}${content}$'
+        return m.group(0)
+
+    s = re.sub(r'(- \*\*(?:Problem|Calculation) Walkthrough\*\*:\s*)([^\n]+)', wrap_walkthrough, s)
+
+    # 21. Clean excessive blank lines
+    s = re.sub(r'\n{3,}', '\n\n', s)
 
     return s
 
@@ -742,6 +832,11 @@ CRITICAL TOPOLOGY, CHAPTER NUMBERING & LABEL RULES:
 5. LaTeX Formula Standard (MANDATORY DELIMITERS & PURITY):
    - Every formula, equation, variable, and operator MUST be wrapped in standard dollar-sign LaTeX delimiters ($...$ inline, $$...$$ block display).
    - STRICT DELIMITER PURITY: NEVER put English text inside '$$ ... $$' or '$ ... $'.
+   - ZERO CORRUPTED OCR ARTIFACTS: NEVER output corrupted symbols or OCR misreads such as '≤ft(' (always use '\\left(') or split lines inside formulas.
+   - FRACTION RECONSTRUCTION: If source notes contain vertical multiline fraction text (e.g. separate lines for numerator and denominator inside parentheses), reconstruct them into standard LaTeX fractions '\\left(\\frac{numerator}{denominator}\\right)'.
+   - LOGARITHM LAWS: Quotient law must always preserve subtraction order: \\log_a \\left(\\frac{x}{y}\\right) = \\log_a x - \\log_a y.
+   - GOVERNING IDENTITY: Must ALWAYS be on its own line preceded by '- **Governing Identity**: $$[LaTeX Formula]$$'.
+   - WORKED EXAMPLES: In Problem Walkthrough, all mathematical expressions, substitutions, and equalities MUST be wrapped in '$...$'.
 6. Summary Structure (Use rich multi-bullet markdown format for EVERY node):
    ### Core Concept & Exam Rule
    - **Key Principle**: [Clear intuition of the rule or formula for exams]
@@ -753,7 +848,7 @@ CRITICAL TOPOLOGY, CHAPTER NUMBERING & LABEL RULES:
    - **Variable Definitions**: [Symbols, coefficients, constants, and domain]
 
    ### Worked Exam Example
-   - **Problem Walkthrough**: [Concrete numerical problem with step-by-step substitution and solution]
+   - **Problem Walkthrough**: [Concrete numerical problem with step-by-step substitution and solution, e.g. Expand $\\log_{5} \\left(\\frac{25}{5}\\right) = \\log_{5} 25 - \\log_{5} 5 = 2 - 1 = 1$.]
 
 JSON OUTPUT SCHEMA:
 Output ONLY a single valid JSON object strictly matching this multi-level hierarchy:
@@ -1046,7 +1141,12 @@ Output ONLY a single valid JSON object strictly matching this schema:
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "ok", "openrouter_configured": bool(os.environ.get("OPENROUTER_API_KEY"))}
+    return {
+        "status": "ok",
+        "groq_configured": bool(os.environ.get("GROQ_API_KEY")),
+        "gemini_configured": bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")),
+        "openrouter_configured": bool(os.environ.get("OPENROUTER_API_KEY"))
+    }
 
 @app.get("/api/auth/config")
 def get_auth_config():
@@ -1253,13 +1353,15 @@ async def upload_pdf(file: UploadFile = File(...)):
         logger.error(f"Error processing PDF file: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to process PDF: {str(e)}")
 
-# Equal Load Balancer: Active alternative models on Groq
+# Equal Load Balancer: Active alternative models across Groq, Gemini, and OpenRouter
 ALL_ALTERNATIVE_MODELS = [
     "openai/gpt-oss-20b",
     "gemini-2.5-flash",
+    "deepseek/deepseek-chat",
     "qwen/qwen3.8-27b",
-    "openai/gpt-oss-120b",
     "gemini-3.5-flash",
+    "meta-llama/llama-3.3-70b-instruct",
+    "openai/gpt-oss-120b",
     "qwen/qwen3.6-27b",
 ]
 
@@ -1270,11 +1372,12 @@ _load_balance_lock = asyncio.Lock()
 async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
     groq_api_key = os.environ.get("GROQ_API_KEY")
     gemini_api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    if not groq_api_key and not gemini_api_key:
-        logger.error("Neither GROQ_API_KEY nor GEMINI_API_KEY is configured.")
+    openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not groq_api_key and not gemini_api_key and not openrouter_api_key:
+        logger.error("No API key configured (GROQ_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY).")
         raise HTTPException(
             status_code=500, 
-            detail="API Key is not configured. Please set GROQ_API_KEY or GEMINI_API_KEY."
+            detail="No API key configured. Please set GROQ_API_KEY, GEMINI_API_KEY, or OPENROUTER_API_KEY."
         )
     
     # Use subject-specific system prompt with intelligent discipline auto-detection
@@ -1289,19 +1392,23 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
     
     raw_model = payload.model or "openai/gpt-oss-20b"
     
-    # Verified active production model families with independent rate limits across Groq and Google
+    # Verified active production model families with independent rate limits across Groq, Gemini, and OpenRouter
     MODEL_POOL = [
         "openai/gpt-oss-20b",
         "gemini-2.5-flash",
+        "deepseek/deepseek-chat",
         "qwen/qwen3.8-27b",
-        "openai/gpt-oss-120b",
         "gemini-3.5-flash",
+        "meta-llama/llama-3.3-70b-instruct",
+        "openai/gpt-oss-120b",
         "qwen/qwen3.6-27b",
     ]
     if not gemini_api_key:
         MODEL_POOL = [m for m in MODEL_POOL if not m.startswith("gemini")]
+    if not openrouter_api_key:
+        MODEL_POOL = [m for m in MODEL_POOL if not m.startswith(("deepseek/", "meta-llama/"))]
     if not groq_api_key:
-        MODEL_POOL = [m for m in MODEL_POOL if m.startswith("gemini")]
+        MODEL_POOL = [m for m in MODEL_POOL if m.startswith("gemini") or m.startswith(("deepseek/", "meta-llama/"))]
 
     MODEL_ALIASES = {
         "gemini": "gemini-2.5-flash",
@@ -1309,6 +1416,13 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
         "gemini-pro": "gemini-2.5-flash",
         "google/gemini-2.5-flash": "gemini-2.5-flash",
         "google/gemini-3.5-flash": "gemini-3.5-flash",
+        "deepseek": "deepseek/deepseek-chat",
+        "deepseek-v3": "deepseek/deepseek-chat",
+        "deepseek-chat": "deepseek/deepseek-chat",
+        "llama-3.3-70b": "meta-llama/llama-3.3-70b-instruct",
+        "llama-3.3-70b-instruct": "meta-llama/llama-3.3-70b-instruct",
+        "openrouter/deepseek-chat": "deepseek/deepseek-chat",
+        "openrouter/llama-3.3-70b": "meta-llama/llama-3.3-70b-instruct",
         "groq/compound": "openai/gpt-oss-120b",
         "compound": "openai/gpt-oss-120b",
         "groq/compound-mini": "openai/gpt-oss-20b",
@@ -1373,6 +1487,8 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
             max_tokens = 2000
 
             is_gemini = model_name.startswith("gemini")
+            is_openrouter = model_name.startswith(("deepseek/", "meta-llama/", "openrouter/"))
+
             if is_gemini:
                 if not gemini_api_key:
                     continue
@@ -1390,6 +1506,28 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
                     "temperature": 0.15,
                     "response_format": {"type": "json_object"}
                 }
+                provider_tag = "Gemini"
+            elif is_openrouter:
+                if not openrouter_api_key:
+                    continue
+                url = "https://openrouter.ai/api/v1/chat/completions"
+                req_headers = {
+                    "Authorization": f"Bearer {openrouter_api_key}",
+                    "HTTP-Referer": "http://localhost:5173",
+                    "X-Title": "PDF to Mindmap",
+                    "Content-Type": "application/json"
+                }
+                data = {
+                    "model": model_name,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "temperature": 0.15,
+                    "max_tokens": max_tokens,
+                    "response_format": {"type": "json_object"}
+                }
+                provider_tag = "OpenRouter"
             else:
                 if not groq_api_key:
                     continue
@@ -1407,9 +1545,9 @@ async def generate_mindmap(payload: MindmapGenerateRequest, response: Response):
                     "temperature": 0.15,
                     "max_tokens": max_tokens,
                 }
+                provider_tag = "Groq"
 
             try:
-                provider_tag = "Gemini" if is_gemini else "Groq"
                 logger.info(f"Generating Chunk {part_num}/{total_parts} using {provider_tag} '{model_name}' (Attempt {attempt+1}/6)...")
                 resp = await client.post(
                     url,

@@ -24,7 +24,73 @@ export function prepareMathInput(raw: string): string {
   if (!raw) return '';
   let s = raw;
 
-  // 0. Repair step markers like {1}:, {2}:, [1]:, (1):
+  // 0. Remove zero-width spaces and invisible characters
+  s = s.replace(/[\u200b\u200c\u200d\ufeff]/g, '');
+
+  // 0a. Repair unicode bullets & asterisk bold markers e.g. −∗∗GoverningIdentity∗∗:
+  s = s.replace(/∗/g, '*');
+  s = s.replace(/[\u2013\u2014\u2212]/g, '-');
+
+  // 0b. Repair corrupted \left before \le conversion: e.g. ≤ft( -> \left(
+  s = s.replace(/\\?≤ft\b/g, '\\left');
+  s = s.replace(/≤ft\(/g, '\\left(');
+
+  // 0c. Repair vertical multiline fractions inside parentheses:
+  s = s.replace(
+    /(?:\\left\s*\(|\()\s*([a-zA-Z0-9_+*-]+)\s*\n+\s*([a-zA-Z0-9_+*-]+)\s*(?:\\right\s*\)|\))/g,
+    (_, top, bot) => `\\left(\\frac{${top.trim()}}{${bot.trim()}}\\right)`
+  );
+
+  // 0d. Invert inverted quotient fractions if matched with subtraction (symbolic):
+  const patSym = /\\log_\{?([a-zA-Z0-9]+)\}?\s*\\left\(\\frac\{([a-zA-Z0-9]+)\}\{([a-zA-Z0-9]+)\}\\right\)\s*=\s*\\log_\{?(?:[a-zA-Z0-9]+)\}?\s*([a-zA-Z0-9]+)\s*-\s*\\log_\{?(?:[a-zA-Z0-9]+)\}?\s*([a-zA-Z0-9]+)/g;
+  s = s.replace(patSym, (_, base, _t, _b, a, b) => `\\log_{${base}} \\left(\\frac{${a}}{${b}}\\right) = \\log_{${base}} ${a} - \\log_{${base}} ${b}`);
+
+  // 0e. Collapse broken multiline log subscripts: "log \n 5" -> "\log_5"
+  s = s.replace(/(?<![\\a-zA-Z])\b(log|ln)\s*\n+\s*([0-9a-zA-Z]+)/g, '\\$1_{$2}');
+  s = s.replace(/=\s*\\?log_?\{?(\w+)\}?\s*\n+\s*(\w+)/g, '= \\log_{$1} $2');
+  s = s.replace(/-\s*\\?log_?\{?(\w+)\}?\s*\n+\s*(\w+)/g, '- \\log_{$1} $2');
+  s = s.replace(/(?<![\\a-zA-Z])\b(log|ln)\s+(\d+)\s+(\d+)\b/g, '\\$1_{$2} $3');
+  s = s.replace(/(?<![a-zA-Z\\])\b(log|ln|sin|cos|tan|cot|sec|csc)\b(?=[_(\d]|\s+\d)/g, '\\$1');
+
+  // 0f. Clean multiline breaks between math tokens
+  s = s.replace(/(\\log_[a-zA-Z0-9{}]+)\s*\n+\s*(\\left|\()/g, '$1 $2');
+  s = s.replace(/(\\right\)?|\))\s*\n*=\s*\n*/g, '$1 = ');
+  s = s.replace(/=\s*\n*(\\log_[a-zA-Z0-9{}]+)/g, '= $1');
+  s = s.replace(/-\s*\n*(\\log_[a-zA-Z0-9{}]+)/g, '- $1');
+  s = s.replace(/([0-9a-zA-Z])\s*-\s*(\\log_)/g, '$1 - $2');
+
+  // 0g. Invert numerical inverted fractions now that log subscripts and operators are normalized:
+  const patNum = /\\log_\{?([a-zA-Z0-9]+)\}?\s*\\left\(\\frac\{(\d+)\}\{(\d+)\}\\right\)\s*=\s*\\log_\{?(?:[a-zA-Z0-9]+)\}?\s*(\d+)\s*-\s*\\log_\{?(?:[a-zA-Z0-9]+)\}?\s*(\d+)/g;
+  s = s.replace(patNum, (_, base, _t, _b, a, b) => `\\log_{${base}} \\left(\\frac{${a}}{${b}}\\right) = \\log_{${base}} ${a} - \\log_{${base}} ${b}`);
+
+  // 0h. Fix squeezed headers e.g. -**GoverningIdentity**: -> - **Governing Identity**:
+  s = s.replace(/(\*{2})([A-Z][a-z]+)([A-Z][a-z]+)(\*{2})/g, '$1$2 $3$4');
+  s = s.replace(/^[−-]?\s*(\*\*[^*]+\*\*)\s*:\s*/gm, '- $1: ');
+  s = s.replace(/^[−-]?\s*(?:\*\*)?(Governing Identity|Governing Formula|Problem Walkthrough|Calculation Walkthrough|Key Principle|Step-by-Step Method|Exam Pitfalls & Conditions)(?:\*\*)?\s*:\s*/gm, '- **$1**: ');
+
+  // 0i. Wrap unwrapped Governing Identity formulas in $$ ... $$
+  s = s.replace(/(- \*\*Governing (?:Identity|Formula)\*\*:\s*)([^\n$]+)/g, (_, prefix, formula) => {
+    const trimmed = formula.trim();
+    return trimmed.startsWith('$') ? `${prefix}${trimmed}` : `${prefix}$$${trimmed}$$`;
+  });
+
+  // 0j. Wrap inline equations in Worked Exam Example walkthroughs if unwrapped:
+  s = s.replace(/(- \*\*(?:Problem|Calculation) Walkthrough\*\*:\s*)([^\n]+)/g, (fullMatch, prefix, content) => {
+    const trimmed = content.trim();
+    if (trimmed.includes('=') && !trimmed.includes('$')) {
+      const leadMatch = trimmed.match(/^(.*?(?:Expand|Evaluate|Solve|Simplify|Calculate|For)\s+)(.+)$/i);
+      if (leadMatch) {
+        const lead = leadMatch[1];
+        const eq = leadMatch[2].replace(/\.$/, '');
+        const dot = trimmed.endsWith('.') ? '.' : '';
+        return `${prefix}${lead}$${eq}$${dot}`;
+      }
+      return `${prefix}$${trimmed}$`;
+    }
+    return fullMatch;
+  });
+
+  // 0k. Repair step markers like {1}:, {2}:, [1]:, (1):
   s = s.replace(/(?:^|\n)\s*[\{\[\(](\d+)[\}\]\)]\s*:\s*/gm, '\n- **Step $1**: ');
 
   // 1. Repair ASCII control characters corrupted by JSON decoders

@@ -136,6 +136,8 @@ export default function App() {
       'openai/gpt-oss-20b',
       'gemini-2.5-flash',
       'gemini-3.5-flash',
+      'deepseek/deepseek-chat',
+      'meta-llama/llama-3.3-70b-instruct',
       'openai/gpt-oss-120b',
       'qwen/qwen3.8-27b',
       'qwen/qwen3.6-27b',
@@ -729,16 +731,20 @@ export default function App() {
               onChange={(e) => setSelectedModel(e.target.value)}
               className="w-full text-xs bg-slate-50 border border-slate-200 text-slate-700 px-2.5 py-1.5 focus:outline-none focus:border-slate-300 font-medium select-none cursor-pointer rounded-none"
             >
-              <option value="auto-smart-routing">Auto (Load-Balanced Across Groq & Gemini) (Recommended)</option>
+              <option value="auto-smart-routing">Auto (Tri-Cloud: Groq, Gemini & OpenRouter) (Recommended)</option>
               <optgroup label="Google Gemini Suite">
                 <option value="gemini-2.5-flash">Gemini 2.5 Flash (Google AI - High Speed)</option>
                 <option value="gemini-3.5-flash">Gemini 3.5 Flash (Google AI - Advanced)</option>
               </optgroup>
-              <optgroup label="Fast & High-Throughput (Ultra-Low Latency)">
+              <optgroup label="OpenRouter Suite">
+                <option value="deepseek/deepseek-chat">DeepSeek V3 (OpenRouter - Reasoning)</option>
+                <option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B (OpenRouter - High Precision)</option>
+              </optgroup>
+              <optgroup label="Fast & High-Throughput (Groq Cloud)">
                 <option value="openai/gpt-oss-20b">GPT-OSS 20B (Ultra-Fast ~580 tok/s)</option>
                 <option value="allam-2-7b">Allam 2 7B (Lightweight & Rapid)</option>
               </optgroup>
-              <optgroup label="Flagship & High-Precision (Deep Reasoning)">
+              <optgroup label="Flagship & High-Precision (Groq Cloud)">
                 <option value="openai/gpt-oss-120b">GPT-OSS 120B (OpenAI Flagship - 128k Context)</option>
                 <option value="qwen/qwen3.8-27b">Qwen 3.8 27B (High-Precision - 128k Context)</option>
                 <option value="qwen/qwen3.6-27b">Qwen 3.6 27B (Reasoning Model - 128k Context)</option>
